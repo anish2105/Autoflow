@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: autoflow-backend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/graph/schema
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.1-flash-lite
+      - key: VALIDATOR_MODEL
+        value: gemini-2.5-flash
+      - key: GEMINI_TEMPERATURE
+        value: "0.2"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: Firecrawl_API_KEY
+        sync: false
+      - key: LLAMA_CLOUD_API_KEY
+        sync: false
+      - key: PINECONE_API_KEY
+        sync: false
+      - key: PINECONE_INDEX_NAME
+        value: autoflow-docs
+      - key: EMBEDDING_MODEL
+        value: models/gemini-embedding-2
+      - key: EMBEDDING_DIMENSION
+        value: "1536"
+

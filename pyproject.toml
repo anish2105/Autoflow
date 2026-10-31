@@ -1,0 +1,36 @@
+[project]
+name = "autoflow-v1"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiosqlite>=0.20.0",
+    "cryptography>=42.0.0",
+    "duckduckgo-search>=7.1.1",
+    "fastapi>=0.115.0",
+    "firecrawl-py>=4.54.0",
+    "google-genai>=0.1.1",
+    "httpx>=0.28.1",
+    "langchain-core>=0.3.30",
+    "langchain-google-genai>=2.0.8",
+    "langgraph>=0.2.60",
+    "langgraph-checkpoint>=2.0.0",
+    "langgraph-checkpoint-sqlite>=3.0.0",
+    "openpyxl>=3.1.2",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "pyjwt>=2.9.0",
+    "python-dotenv>=1.0.1",
+    "reportlab>=4.2.0",
+    "sse-starlette>=2.2.1",
+    "supabase>=2.10.0",
+    "tavily-python>=0.5.0",
+    "llama-cloud>=2.19.0",
+    "markitdown>=0.1.9",
+    "mammoth>=1.13.0",
+    "markdownify>=1.2.3",
+    "pinecone>=5.0.0",
+    "rank-bm25>=0.2.2",
+    "uvicorn[standard]>=0.32.0",
+]
