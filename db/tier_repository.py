@@ -18,7 +18,7 @@ TIER_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "max_messages": 5,
         "max_documents": 1,
         "max_images": 1,
-        "allowed_tools": ["calculate", "get_current_time"],
+        "allowed_tools": ["calculate", "get_current_time", "process_image"],
         "can_upgrade": False,
         "can_access_admin": False,
     },
@@ -28,7 +28,7 @@ TIER_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "max_messages": 25,
         "max_documents": 3,
         "max_images": 5,
-        "allowed_tools": ["calculate", "get_current_time", "web_search", "retrieve_document_context"],
+        "allowed_tools": ["calculate", "get_current_time", "web_search", "retrieve_document_context", "process_image"],
         "can_upgrade": True,
         "can_access_admin": False,
     },
@@ -40,7 +40,7 @@ TIER_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "max_images": -1,
         "allowed_tools": [
             "calculate", "get_current_time", "web_search", "web_scrape",
-            "retrieve_document_context", "export_chat_pdf", "export_chat_excel", "export_chat_txt"
+            "retrieve_document_context", "process_image", "export_chat_pdf", "export_chat_excel", "export_chat_txt"
         ],
         "can_upgrade": True,
         "can_access_admin": False,
@@ -53,7 +53,7 @@ TIER_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "max_images": -1,  # unlimited
         "allowed_tools": [
             "calculate", "get_current_time", "web_search", "web_scrape",
-            "retrieve_document_context", "export_chat_pdf", "export_chat_excel", "export_chat_txt"
+            "retrieve_document_context", "process_image", "export_chat_pdf", "export_chat_excel", "export_chat_txt"
         ],
         "can_upgrade": False,
         "can_access_admin": True,

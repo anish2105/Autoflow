@@ -67,21 +67,26 @@ SYSTEM_INSTRUCTION = build_agent_system_instruction()
 
 VALIDATOR_SYSTEM_PROMPT = (
     "You are a Task Completeness Validator in an autonomous reasoning workflow.\n"
-    "Your SOLE purpose is to evaluate whether the assistant's generated response has FULLY and exhaustively answered "
-    "every question, condition, and sub-task in the user's prompt, or if further generation is required.\n\n"
+    "Your SOLE purpose is to evaluate whether the assistant's generated response has adequately answered "
+    "the user's questions, requests, and comparisons, or if core parts remain unaddressed.\n\n"
+    "80% COMPLETENESS THRESHOLD RULE:\n"
+    "- Calculate a `completeness_score` from 0 to 100 representing how thoroughly the user's core requests, queries, and comparisons have been answered.\n"
+    "- If `completeness_score >= 80`, you MUST set `sufficient = true`. The task is considered complete and no further iterations are needed.\n"
+    "- When substantive answers, data, tables, analyses, or generated content are provided in the chat response, secondary file/export formats (such as asking for a PDF/Word download or cosmetic nuances) DO NOT disqualify the response if the text is present. Mark completeness_score >= 80 and sufficient = true.\n"
+    "- ONLY mark `sufficient = false` (completeness_score < 80) if major core questions, key comparisons, or fundamental sub-tasks were completely ignored or left unaddressed.\n\n"
     "CRITICAL RULES:\n"
     "1. DO NOT evaluate whether the facts, data, or search findings are true or false. You are NOT a fact-checker.\n"
-    "2. FOCUS EXCLUSIVELY on task completeness: Did the assistant address EVERY question and requirement in the user's request?\n"
-    "3. If the user's query is simple (single question) or conversational (e.g. 'hello', 'continue', 'thank you') and the assistant provided an answer, mark sufficient=true with confidence=1.0.\n"
-    "4. If the assistant's response is coherent, ends cleanly, and provides the requested information, mark sufficient=true.\n"
-    "5. Only mark sufficient=false if the user asked a multi-part question and specific sub-questions were explicitly skipped or omitted.\n\n"
+    "2. If the user's query is simple, conversational (e.g. 'hello', 'thanks', 'explain X'), or standard Q&A, and the assistant answered, mark completeness_score = 100 and sufficient = true.\n"
+    "3. For multi-part queries and comparisons, evaluate if at least 80% of the questions/comparisons were answered. If so, mark completeness_score >= 80 and sufficient = true.\n"
+    "4. If the assistant provided a comprehensive solution, do NOT demand minor stylistic perfection or loop the agent unnecessarily.\n\n"
     "Respond ONLY with a valid JSON object matching this exact schema:\n"
     "{\n"
+    '  "completeness_score": 0 to 100,\n'
     '  "sufficient": true/false,\n'
     '  "confidence": 0.0 to 1.0,\n'
-    '  "missing_information": ["unanswered question, sub-task, or missing element", ...],\n'
+    '  "missing_information": ["unanswered core question, missing comparison, or major omitted element", ...],\n'
     '  "issues": [],\n'
-    '  "critique": "Brief 1-sentence assessment of whether the entire user prompt is answered or what remains to be generated"\n'
+    '  "critique": "1-sentence summary of completeness and whether the 80% threshold is satisfied"\n'
     "}"
 )
 
@@ -342,17 +347,19 @@ async def agent_node(state: AgentState) -> Dict[str, Any]:
 
     llm_messages = list(context_messages)
 
-    # 2. If previous validation indicated incomplete coverage of user query, inject guidance
+    # 2. If previous validation indicated incomplete coverage of user query (< 80%), inject targeted guidance
     validation = state.get("validation")
     if validation and not validation.get("sufficient", True):
         missing_parts = validation.get("missing_information", [])
         critique = validation.get("critique", "")
         missing_text = "; ".join(missing_parts) if missing_parts else "unaddressed aspects of the query"
         continuation_msg = (
-            f"[Task Completeness Feedback - Iteration {iteration}]: The user's query has not been completely answered yet.\n"
+            f"[Task Completeness Feedback - Iteration {iteration}]:\n"
+            f"The previous output addressed part of the request, but the following specific questions, comparisons, or items were not yet completed (< 80%):\n"
             f"- Missing / Unaddressed parts: {missing_text}\n"
             f"- Completeness guidance: {critique}\n"
-            f"Please continue generating to completely address all remaining questions and requirements, invoking tools if necessary."
+            f"CRITICAL INSTRUCTION: DO NOT repeat or apologize for the content already generated above. "
+            f"Directly and concisely provide ONLY the missing answers, calculations, or comparisons requested."
         )
         llm_messages.append(HumanMessage(content=continuation_msg))
 
@@ -640,7 +647,7 @@ async def validator_node(state: AgentState) -> Dict[str, Any]:
 
     val_prompt = (
         f"Original User Request:\n\"{research_goal}\"\n\n"
-        f"Assistant Response Provided:\n{combined_response[:4000]}\n\n"
+        f"Assistant Response Provided:\n{combined_response}\n\n"
         f"Please evaluate strictly whether all parts, questions, calculations, and requirements in the user's request have been completely answered, "
         f"or if any sub-tasks, comparisons, or questions remain unfinished and require further generation from the assistant."
     )
@@ -661,15 +668,23 @@ async def validator_node(state: AgentState) -> Dict[str, Any]:
             val_text = val_text.split("```")[1].split("```")[0].strip()
 
         val_data = json.loads(val_text)
-        is_sufficient = bool(val_data.get("sufficient", True))
+        raw_sufficient = bool(val_data.get("sufficient", True))
+        completeness_score = float(val_data.get("completeness_score", 100.0 if raw_sufficient else 60.0))
         confidence = float(val_data.get("confidence", 1.0))
         missing_info = list(val_data.get("missing_information", []))
         critique = str(val_data.get("critique", "Task completeness evaluation completed."))
 
+        # 80% Completeness Threshold Enforcement:
+        # If completeness_score >= 80%, the response is deemed sufficient and complete!
+        is_sufficient = raw_sufficient or (completeness_score >= 80.0)
+        if is_sufficient and completeness_score < 80.0:
+            completeness_score = 80.0
+
         validation_result: ValidationResult = {
             "sufficient": is_sufficient,
+            "completeness_score": completeness_score,
             "confidence": confidence,
-            "missing_information": missing_info,
+            "missing_information": [] if is_sufficient else missing_info,
             "issues": list(val_data.get("issues", [])),
             "critique": critique,
         }
@@ -677,6 +692,7 @@ async def validator_node(state: AgentState) -> Dict[str, Any]:
         print(f"[AutoFlow Graph] [{time_str}] Validator fallback: {e}")
         validation_result: ValidationResult = {
             "sufficient": True,
+            "completeness_score": 100.0,
             "confidence": 0.85,
             "missing_information": [],
             "issues": [],
@@ -686,7 +702,7 @@ async def validator_node(state: AgentState) -> Dict[str, Any]:
     elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
     status_str = "sufficient" if validation_result["sufficient"] else "insufficient"
     
-    print(f"[AutoFlow Graph] [{time_str}] <- Completeness verdict: [{status_str.upper()}] (Confidence: {validation_result['confidence']:.2f}, took {elapsed_ms}ms)")
+    print(f"[AutoFlow Graph] [{time_str}] <- Completeness verdict: [{status_str.upper()}] (Score: {validation_result.get('completeness_score', 0):.0f}%, Confidence: {validation_result['confidence']:.2f}, took {elapsed_ms}ms)")
     if not validation_result["sufficient"]:
         print(f"[AutoFlow Graph] [{time_str}]    * Missing parts: {validation_result['missing_information']}")
         print(f"[AutoFlow Graph] [{time_str}]    * Continuation critique: {validation_result['critique']}")
@@ -695,7 +711,7 @@ async def validator_node(state: AgentState) -> Dict[str, Any]:
         "step_id": step_num,
         "node": "validator",
         "type": "validator",
-        "action": f"Completeness verdict: {status_str} (Confidence: {validation_result['confidence']:.2f})",
+        "action": f"Completeness: {status_str} ({validation_result.get('completeness_score', 100):.0f}%, Confidence: {validation_result['confidence']:.2f})",
         "input": {"goal": research_goal},
         "output": validation_result,
         "status": status_str,
@@ -727,24 +743,27 @@ def should_continue_agent(state: AgentState) -> Literal["tools", "validator"]:
 
 
 def should_continue_validator(state: AgentState) -> Literal["agent", "__end__"]:
-    """Routing from Validator: if complete -> __end__, else -> agent to continue generating."""
+    """Routing from Validator: if complete (>= 80% completeness) -> __end__, else -> agent to continue generating."""
     validation = state.get("validation", {})
     iteration = state.get("iteration_count", 1)
     max_iters = state.get("max_iterations", 5)
     time_str = datetime.now().strftime("%H:%M:%S")
 
-    # 1. Complete -> Finished (only when validator deems output sufficient)
-    if validation.get("sufficient", False):
-        print(f"[AutoFlow Graph] [{time_str}] -> Routing: [validator] -> [__end__] (Task Fully Completed)")
+    completeness = float(validation.get("completeness_score", 100.0 if validation.get("sufficient", False) else 0.0))
+    is_sufficient = bool(validation.get("sufficient", False)) or (completeness >= 80.0)
+
+    # 1. Complete -> Finished (only when output meets the >= 80% completeness threshold)
+    if is_sufficient:
+        print(f"[AutoFlow Graph] [{time_str}] -> Routing: [validator] -> [__end__] (Task Fully Completed - Completeness: {completeness:.1f}% >= 80%)")
         return "__end__"
 
-    # 2. Max iterations reached -> Safety cutoff
-    if iteration >= max_iters:
-        print(f"[AutoFlow Graph] [{time_str}] -> Routing: [validator] -> [__end__] (Max iterations {max_iters} reached)")
+    # 2. Safety cutoff: Prevent repetitive loops & apologies (cap at max 2 iterations)
+    if iteration >= 2 or iteration >= max_iters:
+        print(f"[AutoFlow Graph] [{time_str}] -> Routing: [validator] -> [__end__] (Iteration limit {iteration} reached - preventing repetitive loop)")
         return "__end__"
 
-    # 3. Incomplete -> Loop back to agent (Decision + Synthesizer) to continue generating
-    print(f"[AutoFlow Graph] [{time_str}] -> Routing: [validator] -> [agent] (Query Incomplete - Continuing Generation)")
+    # 3. Incomplete (< 80%) -> Loop back to agent (Decision + Synthesizer) to continue generating missing parts
+    print(f"[AutoFlow Graph] [{time_str}] -> Routing: [validator] -> [agent] (Completeness: {completeness:.1f}% < 80% - Continuing Generation for missing parts)")
     return "agent"
 
 

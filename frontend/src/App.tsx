@@ -74,6 +74,14 @@ function createNewSession(): ChatSession {
 
 const DEFAULT_TOOLS_CONFIG: ToolConfigItem[] = [
   {
+    id: 'retrieve_document_context',
+    name: 'Document Context Retrieval (RAG)',
+    category: 'Documents & RAG',
+    description: 'Performs hybrid search (Dense vector + BM25 keyword matching) to query and retrieve excerpts from uploaded documents.',
+    enabled: true,
+    icon: 'BookOpen'
+  },
+  {
     id: 'web_search',
     name: 'Web Search (Tavily)',
     category: 'Search & Scrape',
@@ -138,6 +146,23 @@ const DEFAULT_TOOLS_CONFIG: ToolConfigItem[] = [
     icon: 'FileText'
   }
 ];
+
+function mergeWithDefaultTools(savedTools?: any[]): ToolConfigItem[] {
+  if (!Array.isArray(savedTools) || savedTools.length === 0) {
+    return DEFAULT_TOOLS_CONFIG;
+  }
+  const savedMap = new Map<string, any>(savedTools.map(t => [t.id, t]));
+  return DEFAULT_TOOLS_CONFIG.map(defaultTool => {
+    const saved = savedMap.get(defaultTool.id);
+    if (saved) {
+      return {
+        ...defaultTool,
+        enabled: typeof saved.enabled === 'boolean' ? saved.enabled : defaultTool.enabled
+      };
+    }
+    return defaultTool;
+  });
+}
 
 function getDocumentsStorageKey(userId?: string | null): string {
   return userId ? `autoflow_documents_${userId}` : 'autoflow_documents_guest';
@@ -208,7 +233,7 @@ export const App: React.FC = () => {
       const saved = localStorage.getItem(key);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) return mergeWithDefaultTools(parsed);
       }
     } catch {}
     return DEFAULT_TOOLS_CONFIG;
@@ -222,7 +247,11 @@ export const App: React.FC = () => {
       try {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          setTools(parsed);
+          const merged = mergeWithDefaultTools(parsed);
+          setTools(merged);
+          try {
+            localStorage.setItem(key, JSON.stringify(merged));
+          } catch {}
         }
       } catch {}
     } else {
@@ -232,9 +261,10 @@ export const App: React.FC = () => {
     if (user?.id) {
       fetchUserToolsApi().then(res => {
         if (res && res.tools && Array.isArray(res.tools) && res.tools.length > 0) {
-          setTools(res.tools);
+          const merged = mergeWithDefaultTools(res.tools);
+          setTools(merged);
           try {
-            localStorage.setItem(key, JSON.stringify(res.tools));
+            localStorage.setItem(key, JSON.stringify(merged));
           } catch {}
         }
       }).catch(() => {});

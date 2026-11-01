@@ -246,11 +246,12 @@ export async function streamChat(
                 callbacks.onValidationResult(data);
               }
               const statusStr = data.sufficient ? 'SUFFICIENT' : 'INSUFFICIENT';
+              const score = typeof data.completeness_score === 'number' ? data.completeness_score : Math.round((data.confidence || 0) * 100);
               callbacks.onEvent({
                 id: Math.random().toString(36).substring(7),
                 timestamp: now,
                 node: 'validator',
-                action: `Evidence Validation: ${statusStr} (Confidence: ${Math.round((data.confidence || 0) * 100)}%)`,
+                action: `Task Completeness: ${statusStr} (${Math.round(score)}%)`,
                 details: data,
                 type: 'validation_result',
               });

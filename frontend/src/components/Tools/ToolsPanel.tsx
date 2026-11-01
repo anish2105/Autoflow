@@ -9,6 +9,7 @@ import {
   Image as ImageIcon,
   FileText,
   FileSpreadsheet,
+  BookOpen,
   Check,
   X,
   SlidersHorizontal,
@@ -65,6 +66,8 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
         return <FileText size={22} color={enabled ? '#DC2626' : color} />;
       case 'FileSpreadsheet':
         return <FileSpreadsheet size={22} color={enabled ? '#16A34A' : color} />;
+      case 'BookOpen':
+        return <BookOpen size={22} color={enabled ? '#2563EB' : color} />;
       default:
         return <Wrench size={22} color={color} />;
     }

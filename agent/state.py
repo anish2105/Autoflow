@@ -38,6 +38,7 @@ def extract_text_content(content: Any) -> str:
 class ValidationResult(TypedDict, total=False):
     """Validation output evaluating evidence sufficiency and quality."""
     sufficient: bool
+    completeness_score: float
     confidence: float
     missing_information: List[str]
     issues: List[str]

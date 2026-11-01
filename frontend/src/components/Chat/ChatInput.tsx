@@ -548,7 +548,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             letterSpacing: '0.04em'
           }}>
             <BookOpen size={12} />
-            <span>RAG Scope ({selectedDocumentIds.length})</span>
+            <span>Files in Scope ({selectedDocumentIds.length})</span>
           </div>
 
           {selectedDocumentIds.map(docId => {
@@ -578,7 +578,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <button
                   type="button"
                   onClick={() => removeSelectedDoc(docId)}
-                  title="Remove from RAG scope"
+                  title="Remove file from scope"
                   style={{
                     background: 'transparent',
                     border: 'none',
@@ -656,11 +656,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           <Paperclip size={18} />
         </button>
 
-        {/* Document RAG Selector Button & Dropdown */}
+        {/* Document Selector Button & Dropdown */}
         <div style={{ position: 'relative' }} ref={docPickerRef}>
           <button
             type="button"
-            title="Attach digitized documents for RAG retrieval"
+            title="Attach files in scope for retrieval"
             onClick={() => setIsDocPickerOpen(prev => !prev)}
             style={{
               background: (selectedDocumentIds && selectedDocumentIds.length > 0) ? 'rgba(13, 50, 115, 0.12)' : isDocPickerOpen ? 'rgba(0, 0, 0, 0.06)' : 'transparent',
@@ -727,7 +727,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <BookOpen size={15} color="#0D3273" />
                   <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-                    RAG Document Scope
+                    Files in Scope
                   </span>
                 </div>
                 <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
@@ -738,7 +738,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               <div style={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 {digitizedDocs.length === 0 ? (
                   <div style={{ padding: '16px 8px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.78rem' }}>
-                    No digitized documents found.<br />Upload a PDF or DOCX to query it with RAG!
+                    No digitized documents found.<br />Upload a PDF or DOCX to query it!
                   </div>
                 ) : (
                   digitizedDocs.map(doc => {

@@ -39,6 +39,7 @@ export interface ToolCallItem {
 
 export interface ValidationResult {
   sufficient: boolean;
+  completeness_score?: number;
   confidence: number;
   missing_information?: string[];
   issues?: string[];

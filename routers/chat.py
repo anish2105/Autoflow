@@ -364,6 +364,11 @@ async def invoke_chat(request: ChatRequest, user: Dict[str, Any] = Depends(get_o
             else:
                 request.enabled_tools = profile.get("allowed_tools")
         request.enabled_tools = filter_tools_for_user_tier(profile, request.enabled_tools)
+        # Safeguard: if files are selected in scope and document retrieval is allowed by user's tier,
+        # ensure retrieve_document_context is enabled in enabled_tools
+        if request.selected_file_ids and "retrieve_document_context" in profile.get("allowed_tools", []):
+            if request.enabled_tools is not None and "retrieve_document_context" not in request.enabled_tools:
+                request.enabled_tools.append("retrieve_document_context")
 
         # Check existing state in checkpointer
         existing_state = chatbot_graph.get_state(config)
@@ -487,6 +492,11 @@ async def stream_chat(request: ChatRequest, user: Dict[str, Any] = Depends(get_o
                 else:
                     request.enabled_tools = profile.get("allowed_tools")
             request.enabled_tools = filter_tools_for_user_tier(profile, request.enabled_tools)
+            # Safeguard: if files are selected in scope and document retrieval is allowed by user's tier,
+            # ensure retrieve_document_context is enabled in enabled_tools
+            if request.selected_file_ids and "retrieve_document_context" in profile.get("allowed_tools", []):
+                if request.enabled_tools is not None and "retrieve_document_context" not in request.enabled_tools:
+                    request.enabled_tools.append("retrieve_document_context")
 
             # Validate image data (max 5 MB, supported MIME types) and set active image
             valid_b64, valid_mime = validate_and_prepare_image(request.image_data, request.mime_type)
@@ -614,6 +624,7 @@ async def stream_chat(request: ChatRequest, user: Dict[str, Any] = Depends(get_o
                                     "event": "validation_result",
                                     "data": json.dumps({
                                         "sufficient": val_data.get("sufficient", True),
+                                        "completeness_score": val_data.get("completeness_score", 100.0 if val_data.get("sufficient", True) else 60.0),
                                         "confidence": val_data.get("confidence", 1.0),
                                         "missing_information": val_data.get("missing_information", []),
                                         "issues": val_data.get("issues", []),
