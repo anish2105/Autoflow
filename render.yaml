@@ -38,4 +38,10 @@ services:
         value: models/gemini-embedding-2
       - key: EMBEDDING_DIMENSION
         value: "1536"
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_HOST
+        value: https://cloud.langfuse.com
 

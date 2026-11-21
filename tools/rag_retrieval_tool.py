@@ -6,13 +6,15 @@ from services.rag_service import RAGService
 # Module-level thread/turn context for trusted file scope injection
 _ACTIVE_TURN_FILE_IDS: List[str] = []
 _ACTIVE_TURN_USER_ID: Optional[str] = None
+_ACTIVE_TURN_RETRIEVAL_COUNT: int = 0
 
 
 def set_active_turn_files(file_ids: Optional[List[str]], user_id: Optional[str] = None):
     """Sets authorized file IDs and authenticated user ID for the current request turn."""
-    global _ACTIVE_TURN_FILE_IDS, _ACTIVE_TURN_USER_ID
+    global _ACTIVE_TURN_FILE_IDS, _ACTIVE_TURN_USER_ID, _ACTIVE_TURN_RETRIEVAL_COUNT
     _ACTIVE_TURN_FILE_IDS = list(file_ids) if file_ids else []
     _ACTIVE_TURN_USER_ID = user_id
+    _ACTIVE_TURN_RETRIEVAL_COUNT = 0
 
 
 def get_active_turn_files() -> Tuple[List[str], Optional[str]]:
@@ -22,9 +24,10 @@ def get_active_turn_files() -> Tuple[List[str], Optional[str]]:
 
 def clear_active_turn_files():
     """Resets active turn file context."""
-    global _ACTIVE_TURN_FILE_IDS, _ACTIVE_TURN_USER_ID
+    global _ACTIVE_TURN_FILE_IDS, _ACTIVE_TURN_USER_ID, _ACTIVE_TURN_RETRIEVAL_COUNT
     _ACTIVE_TURN_FILE_IDS = []
     _ACTIVE_TURN_USER_ID = None
+    _ACTIVE_TURN_RETRIEVAL_COUNT = 0
 
 
 @tool
@@ -34,6 +37,9 @@ async def retrieve_document_context(query: str) -> str:
     Args:
         query: Specific search query or question to retrieve evidence for from the selected documents.
     """
+    global _ACTIVE_TURN_RETRIEVAL_COUNT
+    _ACTIVE_TURN_RETRIEVAL_COUNT += 1
+    call_num = _ACTIVE_TURN_RETRIEVAL_COUNT
     selected_file_ids, user_id = get_active_turn_files()
 
     if not selected_file_ids:
@@ -43,8 +49,6 @@ async def retrieve_document_context(query: str) -> str:
             "so that relevant document evidence can be retrieved."
         )
 
-    print(f"[Tool:retrieve_document_context] Query: '{query}' across {len(selected_file_ids)} selected file(s)...")
-
     try:
         # Run Hybrid Search: Dense + BM25 -> RRF (Top 20) -> Cross-Encoder Reranker (Top 10)
         chunks = await RAGService.retrieve_and_rerank(
@@ -52,6 +56,7 @@ async def retrieve_document_context(query: str) -> str:
             selected_file_ids=selected_file_ids,
             user_id=user_id,
             top_n=10,
+            iteration=call_num,
         )
 
         if not chunks:

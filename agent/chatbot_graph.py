@@ -13,6 +13,7 @@ from llm.gemini import get_gemini_llm
 from tools import ALL_TOOLS
 from tools.rag_retrieval_tool import set_active_turn_files
 from agent.state import AgentState, ExecutionStep, ValidationResult, extract_text_content
+from utils.rag_terminal_logger import RAGTerminalLogger
 
 # Map tool names to tool instances for direct async parallel execution
 TOOL_MAP = {t.name: t for t in ALL_TOOLS}
@@ -34,6 +35,7 @@ AVAILABLE_TOOL_DESCRIPTIONS = {
     "get_current_time": "- **get_current_time**: Current date, time, and timezone information.",
     "export_chat_pdf": "- **export_chat_pdf**: Generate a polished PDF document (with justified text, bold headers, and styled tables). ONLY invoke when user explicitly asks to export, generate, or download a PDF or report.",
     "export_chat_excel": "- **export_chat_excel**: Generate a clean Excel spreadsheet (with bold center-aligned headers, alternating rows, and gridlines removed). ONLY invoke when user explicitly asks to export, generate, or download an Excel file or spreadsheet.",
+    "export_chat_docx": "- **export_chat_docx**: Generate a clean Microsoft Word (.docx) document (with styled headings, lists, inline formatting, and tables). ONLY invoke when user explicitly asks to export, generate, or download a Word document or DOCX file.",
     "export_chat_txt": "- **export_chat_txt**: Generate a plain text transcript dump. ONLY invoke when user explicitly asks to export, dump, or download as text or txt.",
     "process_image": "- **process_image**: Specialized image OCR/analysis tool. (Note: images in conversation history are perceived natively through vision).",
 }
@@ -51,7 +53,7 @@ def build_agent_system_instruction(enabled_tools: Optional[List[str]] = None) ->
         "- Images attached in user messages or conversation history are perceived natively through your vision system. "
         "You can directly view, inspect, describe, and answer questions about any images in the chat history without calling external tools.\n\n"
         f"Active Available Tools:\n{tools_section}\n\n"
-        "CRITICAL TOOL RESTRICTION: Do NOT call export tools (export_chat_pdf, export_chat_excel, export_chat_txt) for ordinary questions. Only call them when the user explicitly requests an export or download in their message (e.g. 'export to excel', 'download as pdf'). When the user asks to 'extract tables', 'show tables', or 'summarize data', ALWAYS format and render the tables directly in the chat using Markdown tables (| Header 1 | Header 2 |)!\n\n"
+        "CRITICAL TOOL RESTRICTION: Do NOT call export tools (export_chat_pdf, export_chat_excel, export_chat_docx, export_chat_txt) for ordinary questions. Only call them when the user explicitly requests an export or download in their message (e.g. 'export to docx', 'export to excel', 'download as pdf'). When the user asks to 'extract tables', 'show tables', or 'summarize data', ALWAYS format and render the tables directly in the chat using Markdown tables (| Header 1 | Header 2 |)!\n\n"
         "When tools are used, immediately synthesize the results into a complete, thorough, and structured response.\n\n"
         "Formatting & Presentation Standards:\n"
         "1. **Code Blocks**: Always enclose code in fenced code blocks with explicit language tags (e.g. ```python, ```javascript, ```json, ```sql, ```bash).\n"
@@ -302,19 +304,51 @@ async def manage_conversation_memory(
         return existing_summary, recent_messages, new_summarized_count
 
 
-async def invoke_llm_with_retry(llm, messages, max_retries: int = 2, initial_delay: float = 2.0):
-    """Invoke LLM with graceful retry and exponential backoff on 429 / RESOURCE_EXHAUSTED."""
+async def invoke_llm_with_retry(llm, messages, max_retries: int = 2, initial_delay: float = 1.5):
+    """Invoke LLM with graceful retry, exponential backoff, and model fallback on 429/503/high demand."""
     for attempt in range(max_retries + 1):
         try:
             return await llm.ainvoke(messages)
         except Exception as e:
             err_msg = str(e)
-            is_rate_limit = any(k in err_msg for k in ["429", "RESOURCE_EXHAUSTED", "quota", "Rate limit"])
-            if is_rate_limit and attempt < max_retries:
+            is_transient = any(
+                k in err_msg
+                for k in [
+                    "429",
+                    "RESOURCE_EXHAUSTED",
+                    "quota",
+                    "Rate limit",
+                    "503",
+                    "UNAVAILABLE",
+                    "Service Unavailable",
+                    "high demand",
+                    "Spikes in demand",
+                    "500",
+                    "502",
+                    "504",
+                    "Overloaded",
+                ]
+            )
+            if is_transient and attempt < max_retries:
                 delay = initial_delay * (attempt + 1)
-                print(f"[AutoFlow LLM] Rate limit encountered (429/Resource Exhausted). Waiting {delay}s before retry {attempt+1}/{max_retries}...")
+                print(f"[AutoFlow LLM] Transient error encountered ({err_msg[:60]}...). Retrying {attempt+1}/{max_retries} in {delay}s...")
                 await asyncio.sleep(delay)
             else:
+                # If unavailable due to 503/high demand, attempt fallback to stable gemini-2.5-flash
+                if any(k in err_msg for k in ["503", "UNAVAILABLE", "high demand", "Spikes in demand"]):
+                    try:
+                        print(f"[AutoFlow LLM] Primary model experiencing high demand. Engaging automatic fallback to 'gemini-2.5-flash'...")
+                        fallback_base = get_gemini_llm(model_name="gemini-2.5-flash", temperature=0.2, streaming=True)
+                        if hasattr(llm, "bound") and hasattr(llm.bound, "tools"):
+                            tools = getattr(llm.bound, "tools", None)
+                            fallback_llm = fallback_base.bind_tools(tools) if tools else fallback_base
+                        elif hasattr(llm, "tools"):
+                            fallback_llm = fallback_base.bind_tools(llm.tools)
+                        else:
+                            fallback_llm = fallback_base
+                        return await fallback_llm.ainvoke(messages)
+                    except Exception as fb_err:
+                        print(f"[AutoFlow LLM] Fallback model invocation error: {fb_err}")
                 raise e
 
 
@@ -349,9 +383,19 @@ async def agent_node(state: AgentState) -> Dict[str, Any]:
 
     # 2. If previous validation indicated incomplete coverage of user query (< 80%), inject targeted guidance
     validation = state.get("validation")
+    is_followup = bool(validation and not validation.get("sufficient", True))
+    missing_parts = validation.get("missing_information", []) if is_followup else None
+    critique = validation.get("critique", "") if is_followup else None
+
+    RAGTerminalLogger.log_agent_turn(
+        iteration=iteration,
+        research_goal=research_goal or "User query",
+        is_followup=is_followup,
+        missing_parts=missing_parts,
+        critique=critique,
+    )
+
     if validation and not validation.get("sufficient", True):
-        missing_parts = validation.get("missing_information", [])
-        critique = validation.get("critique", "")
         missing_text = "; ".join(missing_parts) if missing_parts else "unaddressed aspects of the query"
         continuation_msg = (
             f"[Task Completeness Feedback - Iteration {iteration}]:\n"
@@ -363,9 +407,15 @@ async def agent_node(state: AgentState) -> Dict[str, Any]:
         )
         llm_messages.append(HumanMessage(content=continuation_msg))
 
-    # 3. Prepend dynamic system instruction tailored strictly to active tools, and PERSISTENT SUMMARY
+    # 3. Prepend dynamic system instruction tailored strictly to active tools, custom workflow prefix, and PERSISTENT SUMMARY
     enabled_tools = state.get("enabled_tools")
-    system_messages = [SystemMessage(content=build_agent_system_instruction(enabled_tools))]
+    prefix = state.get("system_prompt_prefix")
+    base_instructions = build_agent_system_instruction(enabled_tools)
+    if prefix and prefix.strip():
+        full_system_text = f"## CUSTOM AGENT WORKFLOW SYSTEM PROMPT\n{prefix.strip()}\n\n---\n{base_instructions}"
+    else:
+        full_system_text = base_instructions
+    system_messages = [SystemMessage(content=full_system_text)]
     if summary:
         summary_system_msg = SystemMessage(
             content=(
@@ -415,6 +465,7 @@ async def agent_node(state: AgentState) -> Dict[str, Any]:
                 "get_current_time": "Date, Time & Timezones",
                 "export_chat_pdf": "PDF Transcript Exporter",
                 "export_chat_excel": "Excel Spreadsheet Exporter",
+                "export_chat_docx": "Word Document Exporter (DOCX)",
                 "export_chat_txt": "Plain Text Exporter",
                 "retrieve_document_context": "Document Context Retrieval (RAG)",
                 "process_image": "Multimodal Vision Analysis",
@@ -432,8 +483,8 @@ async def agent_node(state: AgentState) -> Dict[str, Any]:
                 f"   - When the user asks a question about current events, live news, or documentation, provide the most helpful, comprehensive answer you can using your internal parametric knowledge.\n"
                 f"   - ALWAYS append a clear, polite notice at the bottom:\n"
                 f"     '> *Note: Live Web Search is currently toggled off in your Tools settings. To search the live web and retrieve real-time sources, please enable **Web Search** in the Tools panel.*'\n\n"
-                f"2. **EXPORT TOOLS (`export_chat_pdf`, `export_chat_excel`, `export_chat_txt` toggled off)**:\n"
-                f"   - If the user explicitly asks to export, generate, or download a PDF, Excel spreadsheet, or text file and that tool is toggled off, DO NOT attempt to call the export tool.\n"
+                f"2. **EXPORT TOOLS (`export_chat_pdf`, `export_chat_excel`, `export_chat_docx`, `export_chat_txt` toggled off)**:\n"
+                f"   - If the user explicitly asks to export, generate, or download a PDF, Word document, Excel spreadsheet, or text file and that tool is toggled off, DO NOT attempt to call the export tool.\n"
                 f"   - Instead, solve the user's request completely by presenting all requested data, tables, and formatted content directly in the chat using standard Markdown tables (`| Col 1 | Col 2 |`) or formatted sections.\n"
                 f"   - ALWAYS append a clear notice at the bottom:\n"
                 f"     '> *Note: [Format] export is currently unavailable because the tool is toggled off in your Tools settings. Your data has been generated above in the chat. To download the file directly, please enable **[Tool Name]** in the Tools panel.*'\n\n"
@@ -453,8 +504,8 @@ async def agent_node(state: AgentState) -> Dict[str, Any]:
     else:
         current_llm = model_with_tools
 
-    # Loop Protection: If iteration >= 3, prevent tool loops by stripping tool bindings and forcing direct synthesis
-    if iteration >= 3:
+    # Loop Protection: If iteration >= 4, prevent tool loops by stripping tool bindings and forcing direct synthesis
+    if iteration >= 4:
         print(f"[AutoFlow Graph] [{time_str}] -> Iteration {iteration} reached: Enforcing direct synthesis (unbinding tools)")
         current_llm = base_streaming_llm
 
@@ -467,17 +518,26 @@ async def agent_node(state: AgentState) -> Dict[str, Any]:
     elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
     has_tool_calls = bool(getattr(response, "tool_calls", None))
+    tool_calls = getattr(response, "tool_calls", []) or []
+    response_text = extract_text_content(response.content)
+
+    RAGTerminalLogger.log_agent_actions(
+        tool_calls=tool_calls,
+        direct_response_preview=response_text if not tool_calls else None,
+        elapsed_ms=elapsed_ms,
+    )
+    if not has_tool_calls and response_text:
+        RAGTerminalLogger.log_workflow_agent_synthesis(
+            evidence_count=len(state.get("evidence", [])),
+            response_preview=response_text,
+            elapsed_ms=elapsed_ms,
+        )
+
     if has_tool_calls:
         tool_names = [tc["name"] for tc in response.tool_calls]
         action_desc = f"Emitted {len(response.tool_calls)} parallel tool call(s): {tool_names}"
-        print(f"[AutoFlow Graph] [{time_str}] <- LLM requested parallel tool execution: {tool_names} (took {elapsed_ms}ms)")
-        for tc in response.tool_calls:
-            print(f"[AutoFlow Graph] [{time_str}]    * Tool: {tc.get('name')} | Arguments: {tc.get('args')}")
     else:
         action_desc = "Synthesized response (Decision + Synthesizer)"
-        print(f"[AutoFlow Graph] [{time_str}] <- LLM synthesized response directly (took {elapsed_ms}ms)")
-
-    response_text = extract_text_content(response.content)
     preview = (response_text[:100] + "...") if len(response_text) > 100 else response_text
 
     new_step: ExecutionStep = {
@@ -572,6 +632,12 @@ async def parallel_tools_node(state: AgentState) -> Dict[str, Any]:
         text_out = extract_text_content(output_content)
         preview = (text_out[:120] + "...") if len(text_out) > 120 else text_out
         print(f"[AutoFlow Graph] [{time_str}]    * Finished [{tool_name}]: {preview} (took {t_elapsed}ms)")
+        RAGTerminalLogger.log_workflow_tool_flow(
+            tool_name=tool_name,
+            tool_input=tool_args,
+            tool_output=text_out,
+            elapsed_ms=t_elapsed,
+        )
 
         tool_msg = ToolMessage(content=str(output_content), tool_call_id=tool_call_id, name=tool_name)
         
@@ -702,10 +768,14 @@ async def validator_node(state: AgentState) -> Dict[str, Any]:
     elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
     status_str = "sufficient" if validation_result["sufficient"] else "insufficient"
     
-    print(f"[AutoFlow Graph] [{time_str}] <- Completeness verdict: [{status_str.upper()}] (Score: {validation_result.get('completeness_score', 0):.0f}%, Confidence: {validation_result['confidence']:.2f}, took {elapsed_ms}ms)")
-    if not validation_result["sufficient"]:
-        print(f"[AutoFlow Graph] [{time_str}]    * Missing parts: {validation_result['missing_information']}")
-        print(f"[AutoFlow Graph] [{time_str}]    * Continuation critique: {validation_result['critique']}")
+    RAGTerminalLogger.log_validator_evaluation(
+        iteration=iteration,
+        completeness_score=validation_result.get("completeness_score", 0.0),
+        is_sufficient=validation_result["sufficient"],
+        missing_info=validation_result.get("missing_information", []),
+        critique=validation_result.get("critique", ""),
+        elapsed_ms=elapsed_ms,
+    )
 
     new_step: ExecutionStep = {
         "step_id": step_num,
@@ -757,9 +827,9 @@ def should_continue_validator(state: AgentState) -> Literal["agent", "__end__"]:
         print(f"[AutoFlow Graph] [{time_str}] -> Routing: [validator] -> [__end__] (Task Fully Completed - Completeness: {completeness:.1f}% >= 80%)")
         return "__end__"
 
-    # 2. Safety cutoff: Prevent repetitive loops & apologies (cap at max 2 iterations)
-    if iteration >= 2 or iteration >= max_iters:
-        print(f"[AutoFlow Graph] [{time_str}] -> Routing: [validator] -> [__end__] (Iteration limit {iteration} reached - preventing repetitive loop)")
+    # 2. Safety cutoff: Allow up to 3 retrieval/refinement iterations for complex multi-part queries
+    if iteration >= 3 or iteration >= max_iters:
+        print(f"[AutoFlow Graph] [{time_str}] -> Routing: [validator] -> [__end__] (Iteration limit {iteration} reached - preventing excessive looping)")
         return "__end__"
 
     # 3. Incomplete (< 80%) -> Loop back to agent (Decision + Synthesizer) to continue generating missing parts
@@ -870,6 +940,7 @@ def get_graph_schema() -> Dict[str, Any]:
             {"name": "process_image", "description": "Multimodal visual QA, OCR, and photo analysis (max 5 MB; PNG, JPEG, WEBP, HEIC, HEIF)"},
             {"name": "export_chat_pdf", "description": "Generate formatted PDF transcript documents with styled tables and headers"},
             {"name": "export_chat_excel", "description": "Generate clean Excel spreadsheets without gridlines and styled headers"},
+            {"name": "export_chat_docx", "description": "Generate clean Microsoft Word documents (.docx) with styled headings and tables"},
             {"name": "export_chat_txt", "description": "Generate plain text conversation transcript dumps"},
             {"name": "retrieve_document_context", "description": "Hybrid RAG search (Dense + BM25 + RRF + Cross-Encoder reranking) over selected documents"},
         ],

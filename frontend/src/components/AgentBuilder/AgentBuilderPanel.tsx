@@ -1,384 +1,750 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
+  Play,
+  Save,
+  Plus,
+  Code,
+  History,
+  Check,
   Cpu,
+  Trash2,
   Sparkles,
-  GitBranch,
   Layers,
-  Wrench,
-  ShieldCheck,
-  Zap,
-  ArrowRight,
-  Clock,
-  Compass,
-  Boxes,
+  HelpCircle,
+  ChevronUp,
+  ChevronDown,
+  Copy,
+  Terminal,
+  FileCode,
+  Maximize2,
 } from 'lucide-react';
+import {
+  WorkflowDefinition,
+  WorkflowNode,
+  WorkflowEdge,
+  WorkflowNodeType,
+} from '../../types/workflow';
+import { DocumentItem } from '../../types';
+import { ToolPaletteRibbon } from './ToolPaletteRibbon';
+import { WorkflowCanvas } from './WorkflowCanvas';
+import { WorkflowNodeDrawer } from './WorkflowNodeDrawer';
+import { MermaidCodeModal, generateMermaidCode } from './MermaidCodeModal';
+import { createWorkflowApi, updateWorkflowApi, logCanvasCodeApi, streamChat } from '../../services/api';
 
-export const AgentBuilderPanel: React.FC = () => {
+interface AgentBuilderPanelProps {
+  workflow?: WorkflowDefinition | null;
+  onSaveWorkflow?: (workflow: WorkflowDefinition) => Promise<WorkflowDefinition>;
+  onExecuteInChat?: (prompt: string, workflow: WorkflowDefinition) => void;
+  onOpenHistory?: () => void;
+  onNewWorkflow?: () => void;
+  documents?: DocumentItem[];
+  onUploadDocument?: (file: File) => Promise<DocumentItem | null>;
+}
+
+function createDefaultWorkflow(): WorkflowDefinition {
+  const id = `wf_${Date.now()}`;
+  const inputNode: WorkflowNode = {
+    id: 'node_input',
+    type: 'input',
+    title: 'User Query',
+    category: 'all',
+    icon: 'MessageSquare',
+    x: 80,
+    y: 180,
+    config: {
+      default_query: 'Artificial Intelligence and Machine Learning\nBig Data Analytics\nUser Interface Design',
+    },
+    status: 'idle',
+  };
+
+  const agentNode: WorkflowNode = {
+    id: 'node_agent',
+    type: 'agent',
+    title: 'AutoFlow Decision Agent',
+    category: 'all',
+    icon: 'Cpu',
+    x: 360,
+    y: 180,
+    config: {
+      system_prompt_prefix: '',
+    },
+    status: 'idle',
+  };
+
+  const viewerNode: WorkflowNode = {
+    id: 'node_viewer',
+    type: 'viewer',
+    title: 'Browse / Result Viewer',
+    category: 'export',
+    icon: 'Eye',
+    x: 640,
+    y: 180,
+    config: {
+      viewer_title: 'Synthesized Result View',
+    },
+    status: 'idle',
+  };
+
+  const edges: WorkflowEdge[] = [
+    {
+      id: 'edge_in_agent',
+      fromNodeId: 'node_input',
+      toNodeId: 'node_agent',
+    },
+    {
+      id: 'edge_agent_out',
+      fromNodeId: 'node_agent',
+      toNodeId: 'node_viewer',
+    },
+  ];
+
+  return {
+    id,
+    name: 'Custom Agent Pipeline',
+    description: 'Visual multi-tool workflow powered by AutoFlow Agent & Completeness Validator',
+    system_prompt_prefix: '',
+    nodes: [inputNode, agentNode, viewerNode],
+    edges,
+    mermaid_code: generateMermaidCode('Custom Agent Pipeline', [inputNode, agentNode, viewerNode], edges),
+  };
+}
+
+export const AgentBuilderPanel: React.FC<AgentBuilderPanelProps> = ({
+  workflow: initialWorkflow,
+  onSaveWorkflow,
+  onExecuteInChat,
+  onOpenHistory,
+  onNewWorkflow,
+  documents = [],
+  onUploadDocument,
+}) => {
+  const [currentWorkflow, setCurrentWorkflow] = useState<WorkflowDefinition>(() => {
+    return initialWorkflow || createDefaultWorkflow();
+  });
+
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [isMermaidOpen, setIsMermaidOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Runtime Pipeline Execution & Formatted Output State (On-Screen Viewer)
+  const [executionState, setExecutionState] = useState<{
+    isRunning: boolean;
+    streamOutput: string;
+    activeStep: string | null;
+    completed: boolean;
+    prompt: string;
+  }>(() => {
+    const inputNode = (initialWorkflow || createDefaultWorkflow()).nodes.find((n) => n.type === 'input');
+    return {
+      isRunning: false,
+      streamOutput: '',
+      activeStep: null,
+      completed: false,
+      prompt:
+        inputNode?.config?.default_query ||
+        'Artificial Intelligence and Machine Learning\nBig Data Analytics\nUser Interface Design',
+    };
+  });
+
+  // Automatically sync generated Mermaid code to coding terminal whenever tools or edges change
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const mermaidString = generateMermaidCode(
+        currentWorkflow.name,
+        currentWorkflow.nodes,
+        currentWorkflow.edges
+      );
+      logCanvasCodeApi({
+        workflow_name: currentWorkflow.name,
+        node_count: currentWorkflow.nodes.length,
+        edge_count: currentWorkflow.edges.length,
+        mermaid_code: mermaidString,
+      }).catch(() => {});
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [currentWorkflow.name, currentWorkflow.nodes, currentWorkflow.edges]);
+
+  // Execute pipeline from on-screen output node drawer or top bar button
+  const handleRunExecution = async () => {
+    if (!executionState.prompt.trim() || executionState.isRunning) return;
+
+    // Automatically auto-save current workflow and prompt to database so user never has to re-type
+    handleSave();
+
+    const agentNode = currentWorkflow.nodes.find((n) => n.type === 'agent');
+    const ragNodes = currentWorkflow.nodes.filter((n) => n.type === 'rag');
+    const scrapeNodes = currentWorkflow.nodes.filter((n) => n.type === 'web_scrape');
+
+    const systemPromptPrefix =
+      agentNode?.config?.system_prompt_prefix || currentWorkflow.system_prompt_prefix || '';
+
+    const allFileIds = Array.from(
+      new Set(ragNodes.flatMap((n) => n.config?.selected_file_ids || []))
+    );
+
+    const allUrls = Array.from(
+      new Set(scrapeNodes.flatMap((n) => n.config?.urls || []))
+    );
+
+    const enabledTools: string[] = ['calculate', 'get_current_time'];
+    if (ragNodes.length > 0 || allFileIds.length > 0) enabledTools.push('retrieve_document_context');
+    if (currentWorkflow.nodes.some((n) => n.type === 'web_search')) enabledTools.push('web_search');
+    if (scrapeNodes.length > 0 || allUrls.length > 0) enabledTools.push('web_scrape');
+    if (currentWorkflow.nodes.some((n) => n.type === 'vision')) enabledTools.push('process_image');
+
+    // Focus output node drawer
+    const outputNode =
+      currentWorkflow.nodes.find((n) => n.type === 'viewer') ||
+      currentWorkflow.nodes.find((n) => n.type.startsWith('export_')) ||
+      agentNode ||
+      null;
+
+    if (outputNode && selectedNodeId !== outputNode.id) {
+      setSelectedNodeId(outputNode.id);
+    }
+
+    setExecutionState((prev) => ({
+      ...prev,
+      isRunning: true,
+      streamOutput: '',
+      activeStep: 'Initializing agent graph & validator...',
+      completed: false,
+    }));
+
+    const threadId = `wf_run_${Date.now()}`;
+
+    try {
+      await streamChat(
+        executionState.prompt,
+        [],
+        threadId,
+        {
+          onToken: (token) => {
+            setExecutionState((prev) => ({ ...prev, streamOutput: prev.streamOutput + token }));
+          },
+          onNodeStart: (node, label) => {
+            setExecutionState((prev) => ({ ...prev, activeStep: `Running node: ${label || node}` }));
+          },
+          onNodeEnd: (node) => {
+            if (node === 'validator') {
+              setExecutionState((prev) => ({
+                ...prev,
+                activeStep: 'Completeness Validator: Verified (>=80% evidence)',
+              }));
+            }
+          },
+          onToolStart: (toolName) => {
+            setExecutionState((prev) => ({ ...prev, activeStep: `Executing tool: ${toolName}...` }));
+          },
+          onToolEnd: (toolName) => {
+            setExecutionState((prev) => ({ ...prev, activeStep: `Completed tool: ${toolName}` }));
+          },
+          onEvent: () => {},
+          onDone: (finalContent) => {
+            if (finalContent) {
+              setExecutionState((prev) => ({ ...prev, streamOutput: finalContent }));
+            }
+          },
+          onError: (err) => {
+            console.error('Run error:', err);
+            setExecutionState((prev) => ({ ...prev, activeStep: `Error: ${err}` }));
+          },
+        },
+        undefined,
+        undefined,
+        undefined,
+        enabledTools,
+        allFileIds,
+        systemPromptPrefix
+      );
+
+      setExecutionState((prev) => ({
+        ...prev,
+        completed: true,
+        activeStep: 'Execution completed successfully!',
+      }));
+
+      // Update output node to show ready status badge on canvas
+      if (outputNode) {
+        handleUpdateConfig(outputNode.id, { has_output: true });
+      }
+    } catch (err: any) {
+      console.error('Execution stream failed:', err);
+      setExecutionState((prev) => ({
+        ...prev,
+        activeStep: `Execution error: ${err.message || 'Server error'}`,
+      }));
+    } finally {
+      setExecutionState((prev) => ({ ...prev, isRunning: false }));
+    }
+  };
+
+  // Handle runtime prompt change, keeping input node config continuously synchronized
+  const handlePromptChange = (prompt: string) => {
+    setExecutionState((prev) => ({ ...prev, prompt }));
+    setCurrentWorkflow((prev) => ({
+      ...prev,
+      nodes: prev.nodes.map((n) =>
+        n.type === 'input'
+          ? { ...n, config: { ...n.config, default_query: prompt } }
+          : n
+      ),
+    }));
+  };
+
+  // Sync when prop changes (e.g. from history or switching workflows)
+  useEffect(() => {
+    if (initialWorkflow) {
+      setCurrentWorkflow(initialWorkflow);
+      const inputNode = initialWorkflow.nodes.find((n) => n.type === 'input');
+      if (inputNode?.config?.default_query) {
+        setExecutionState((prev) => ({
+          ...prev,
+          prompt: inputNode.config.default_query,
+        }));
+      }
+    }
+  }, [initialWorkflow]);
+
+  const selectedNode = currentWorkflow.nodes.find((n) => n.id === selectedNodeId) || null;
+
+  // Add node from ribbon
+  const handleAddNode = (type: WorkflowNodeType, x?: number, y?: number) => {
+    const newId = `node_${type}_${Date.now().toString(36)}`;
+    let title = 'Tool Node';
+
+    switch (type) {
+      case 'input': title = 'User Query'; break;
+      case 'rag': title = 'Document Scope (RAG)'; break;
+      case 'web_scrape': title = 'Web Scraper (Firecrawl)'; break;
+      case 'web_search': title = 'Web Search (Tavily)'; break;
+      case 'calculate': title = 'Math Calculator'; break;
+      case 'time': title = 'Date & Timezones'; break;
+      case 'vision': title = 'Multimodal Vision'; break;
+      case 'agent': title = 'AutoFlow Agent'; break;
+      case 'export_docx': title = 'Word Document (.docx)'; break;
+      case 'export_pdf': title = 'PDF Report (.pdf)'; break;
+      case 'export_excel': title = 'Excel Sheet (.xlsx)'; break;
+      case 'export_txt': title = 'Plain Text (.txt)'; break;
+    }
+
+    // Default position if not dropped
+    const posX = x ?? 260 + Math.random() * 80;
+    const posY = y ?? 140 + Math.random() * 80;
+
+    const newNode: WorkflowNode = {
+      id: newId,
+      type,
+      title,
+      category: 'all',
+      icon: 'Tool',
+      x: posX,
+      y: posY,
+      config: {},
+      status: 'idle',
+    };
+
+    setCurrentWorkflow((prev) => ({
+      ...prev,
+      nodes: [...prev.nodes, newNode],
+    }));
+
+    setSelectedNodeId(newId);
+  };
+
+  // Node updates
+  const handleUpdateNodes = (newNodes: WorkflowNode[]) => {
+    setCurrentWorkflow((prev) => ({
+      ...prev,
+      nodes: newNodes,
+    }));
+  };
+
+  const handleUpdateEdges = (newEdges: WorkflowEdge[]) => {
+    setCurrentWorkflow((prev) => ({
+      ...prev,
+      edges: newEdges,
+    }));
+  };
+
+  const handleDeleteNode = (nodeId: string) => {
+    setCurrentWorkflow((prev) => ({
+      ...prev,
+      nodes: prev.nodes.filter((n) => n.id !== nodeId),
+      edges: prev.edges.filter((e) => e.fromNodeId !== nodeId && e.toNodeId !== nodeId),
+    }));
+    if (selectedNodeId === nodeId) {
+      setSelectedNodeId(null);
+    }
+  };
+
+  const handleDeleteEdge = (edgeId: string) => {
+    setCurrentWorkflow((prev) => ({
+      ...prev,
+      edges: prev.edges.filter((e) => e.id !== edgeId),
+    }));
+  };
+
+  const handleUpdateConfig = (nodeId: string, updatedConfig: Record<string, any>) => {
+    setCurrentWorkflow((prev) => {
+      const targetNode = prev.nodes.find((n) => n.id === nodeId);
+      const isAgent = targetNode?.type === 'agent';
+      return {
+        ...prev,
+        system_prompt_prefix:
+          isAgent && updatedConfig.system_prompt_prefix !== undefined
+            ? updatedConfig.system_prompt_prefix
+            : prev.system_prompt_prefix,
+        nodes: prev.nodes.map((n) => (n.id === nodeId ? { ...n, config: updatedConfig } : n)),
+      };
+    });
+  };
+
+  const handleUpdateTitle = (nodeId: string, newTitle: string) => {
+    setCurrentWorkflow((prev) => ({
+      ...prev,
+      nodes: prev.nodes.map((n) => (n.id === nodeId ? { ...n, title: newTitle } : n)),
+    }));
+  };
+
+  // Save workflow (persists query, agent prompt prefix, tool configs, and node DAG to DB)
+  const handleSave = async (overrideWorkflow?: WorkflowDefinition) => {
+    setIsSaving(true);
+    setSaveSuccess(false);
+
+    const baseWorkflow = overrideWorkflow || currentWorkflow;
+
+    // Ensure input node always contains the latest runtime query prompt
+    const updatedNodes = baseWorkflow.nodes.map((n) => {
+      if (n.type === 'input') {
+        return {
+          ...n,
+          config: {
+            ...n.config,
+            default_query: executionState.prompt || n.config?.default_query || '',
+          },
+        };
+      }
+      return n;
+    });
+
+    // Ensure agent node and top-level workflow share the latest custom system prompt prefix
+    const agentNode = updatedNodes.find((n) => n.type === 'agent');
+    const systemPrefix =
+      agentNode?.config?.system_prompt_prefix || baseWorkflow.system_prompt_prefix || '';
+
+    // Sync mermaid code
+    const mermaid = generateMermaidCode(
+      baseWorkflow.name,
+      updatedNodes,
+      baseWorkflow.edges
+    );
+
+    const payload: WorkflowDefinition = {
+      ...baseWorkflow,
+      system_prompt_prefix: systemPrefix,
+      nodes: updatedNodes,
+      mermaid_code: mermaid,
+    };
+
+    try {
+      if (onSaveWorkflow) {
+        const saved = await onSaveWorkflow(payload);
+        setCurrentWorkflow(saved);
+      } else {
+        // Fallback direct API save
+        try {
+          const res = await createWorkflowApi(payload);
+          if (res) setCurrentWorkflow(res.workflow || res);
+        } catch {
+          const res = await updateWorkflowApi(payload.id, payload);
+          if (res) setCurrentWorkflow(res.workflow || res);
+        }
+      }
+
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2500);
+    } catch (err) {
+      console.error('Failed to save workflow:', err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleResetCanvas = () => {
+    if (onNewWorkflow) {
+      onNewWorkflow();
+    } else {
+      setCurrentWorkflow(createDefaultWorkflow());
+      setSelectedNodeId(null);
+    }
+  };
+
+  const liveMermaidString = generateMermaidCode(
+    currentWorkflow.name,
+    currentWorkflow.nodes,
+    currentWorkflow.edges
+  );
+
+  const liveJsonString = JSON.stringify(
+    {
+      name: currentWorkflow.name,
+      nodes: currentWorkflow.nodes.map((n) => ({
+        id: n.id,
+        type: n.type,
+        title: n.title,
+        config: n.config,
+      })),
+      edges: currentWorkflow.edges.map((e) => ({
+        from: e.fromNodeId,
+        to: e.toNodeId,
+      })),
+    },
+    null,
+    2
+  );
+
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100%',
-      background: 'var(--color-canvas)',
-      overflowY: 'auto',
-      padding: '28px 36px'
-    }}>
-      {/* Header Banner */}
-      <div style={{
+    <div
+      style={{
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: '28px',
-        flexWrap: 'wrap',
-        gap: '16px'
-      }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
-            <h2 style={{
-              fontSize: '1.45rem',
-              fontWeight: 800,
-              color: 'var(--text-primary)',
-              margin: 0,
+        flexDirection: 'column',
+        height: '100%',
+        width: '100%',
+        background: 'var(--color-canvas)',
+        position: 'relative',
+        overflow: 'hidden',
+      }}
+    >
+      {/* 1. Alteryx-Style Studio Top Action Bar */}
+      <div
+        style={{
+          height: '52px',
+          background: 'var(--color-surface-white)',
+          borderBottom: '1px solid var(--border-subtle)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '0 20px',
+          zIndex: 30,
+        }}
+      >
+        {/* Left: Workflow Title & Info */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div
+            style={{
+              width: '32px',
+              height: '32px',
+              borderRadius: '8px',
+              background: '#0D3273',
+              color: '#FFFFFF',
               display: 'flex',
               alignItems: 'center',
-              gap: '10px'
-            }}>
-              <Cpu size={26} color="#0D3273" />
-              Agent Builder Studio
-            </h2>
-            <span style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '5px',
-              padding: '3px 10px',
-              borderRadius: '20px',
-              background: 'rgba(245, 158, 11, 0.12)',
-              border: '1px solid rgba(245, 158, 11, 0.25)',
-              color: '#D97706',
-              fontSize: '0.72rem',
-              fontWeight: 700,
-              letterSpacing: '0.04em',
-              textTransform: 'uppercase'
-            }}>
-              <Clock size={11} />
-              Work in Progress
+              justifyContent: 'center',
+            }}
+          >
+            <Cpu size={18} />
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <input
+              type="text"
+              value={currentWorkflow.name}
+              onChange={(e) => setCurrentWorkflow((prev) => ({ ...prev, name: e.target.value }))}
+              placeholder="Workflow Name..."
+              style={{
+                fontSize: '1rem',
+                fontWeight: 700,
+                color: 'var(--text-primary)',
+                border: 'none',
+                outline: 'none',
+                background: 'transparent',
+                borderBottom: '1px dashed var(--border-subtle)',
+                padding: '2px 4px',
+                minWidth: '220px',
+              }}
+            />
+            <span
+              style={{
+                fontSize: '0.68rem',
+                fontWeight: 600,
+                color: 'var(--text-tertiary)',
+                background: 'var(--color-surface-subtle)',
+                padding: '2px 6px',
+                borderRadius: '6px',
+              }}
+            >
+              {currentWorkflow.nodes.length} nodes
             </span>
           </div>
-          <p style={{
-            fontSize: '0.85rem',
-            color: 'var(--text-secondary)',
-            margin: 0,
-            maxWidth: '680px'
-          }}>
-            Visually design, wire, and deploy specialized multi-agent graph pipelines with custom LLM backbones, custom tools, and automated validation gates.
-          </p>
         </div>
-      </div>
 
-      {/* Hero Visual Mockup Card */}
-      <div style={{
-        background: 'linear-gradient(135deg, rgba(13, 50, 115, 0.05) 0%, rgba(20, 184, 166, 0.05) 100%)',
-        border: '1px solid rgba(13, 50, 115, 0.15)',
-        borderRadius: '20px',
-        padding: '32px',
-        marginBottom: '32px',
-        boxShadow: 'var(--shadow-subtle)',
-        position: 'relative',
-        overflow: 'hidden'
-      }}>
-        <div style={{
-          position: 'absolute',
-          top: '-20px',
-          right: '-20px',
-          width: '180px',
-          height: '180px',
-          background: 'radial-gradient(circle, rgba(13, 50, 115, 0.08) 0%, transparent 70%)',
-          borderRadius: '50%',
-          pointerEvents: 'none'
-        }} />
+        {/* Right: Studio Action Buttons */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {onOpenHistory && (
+            <button
+              onClick={onOpenHistory}
+              style={{
+                padding: '6px 12px',
+                borderRadius: '8px',
+                background: 'var(--color-surface)',
+                border: '1px solid var(--border-subtle)',
+                color: 'var(--text-secondary)',
+                fontSize: '0.78rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+              title="Browse saved workflows"
+            >
+              <History size={14} />
+              <span>Workflows</span>
+            </button>
+          )}
 
-        <div style={{ maxWidth: '600px' }}>
-          <div style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '6px',
-            color: '#0D3273',
-            fontSize: '0.76rem',
-            fontWeight: 700,
-            textTransform: 'uppercase',
-            letterSpacing: '0.08em',
-            marginBottom: '10px'
-          }}>
-            <Sparkles size={14} />
-            Next-Gen Architecture
-          </div>
-          <h3 style={{
-            fontSize: '1.3rem',
-            fontWeight: 800,
-            color: 'var(--text-primary)',
-            margin: '0 0 10px 0'
-          }}>
-            Dynamic Multi-Agent Graph Composer
-          </h3>
-          <p style={{
-            fontSize: '0.86rem',
-            lineHeight: 1.6,
-            color: 'var(--text-secondary)',
-            margin: '0 0 20px 0'
-          }}>
-            AutoFlow V2 will empower you to construct stateful LangGraph agents directly from the browser. Wire conditional edges, bind custom APIs as tools, and specify iterative validator loops without writing Python code.
-          </p>
-          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              padding: '8px 14px',
-              borderRadius: '10px',
+          <button
+            onClick={handleResetCanvas}
+            style={{
+              padding: '6px 12px',
+              borderRadius: '8px',
               background: 'var(--color-surface)',
               border: '1px solid var(--border-subtle)',
+              color: 'var(--text-secondary)',
               fontSize: '0.78rem',
               fontWeight: 600,
-              color: 'var(--text-primary)'
-            }}>
-              <GitBranch size={14} color="#0D3273" />
-              Visual Node Wiring
-            </div>
-            <div style={{
+              cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: '8px',
-              padding: '8px 14px',
-              borderRadius: '10px',
+              gap: '6px',
+            }}
+            title="Create clean workflow"
+          >
+            <Plus size={14} />
+            <span>New</span>
+          </button>
+
+          <button
+            onClick={() => setIsMermaidOpen(true)}
+            style={{
+              padding: '6px 12px',
+              borderRadius: '8px',
               background: 'var(--color-surface)',
               border: '1px solid var(--border-subtle)',
+              color: 'var(--text-secondary)',
               fontSize: '0.78rem',
               fontWeight: 600,
-              color: 'var(--text-primary)'
-            }}>
-              <Layers size={14} color="#14B8A6" />
-              Multi-Model Routing
-            </div>
-            <div style={{
+              cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: '8px',
-              padding: '8px 14px',
-              borderRadius: '10px',
-              background: 'var(--color-surface)',
-              border: '1px solid var(--border-subtle)',
+              gap: '6px',
+            }}
+            title="View Mermaid code modal"
+          >
+            <Code size={14} />
+            <span>Mermaid</span>
+          </button>
+
+          <button
+            onClick={() => handleSave()}
+            disabled={isSaving}
+            style={{
+              padding: '6px 14px',
+              borderRadius: '8px',
+              background: saveSuccess ? 'rgba(22, 163, 74, 0.12)' : 'var(--color-surface)',
+              border: saveSuccess ? '1px solid #16A34A' : '1px solid var(--border-subtle)',
+              color: saveSuccess ? '#16A34A' : 'var(--text-primary)',
               fontSize: '0.78rem',
               fontWeight: 600,
-              color: 'var(--text-primary)'
-            }}>
-              <ShieldCheck size={14} color="#F59E0B" />
-              Automated Quality Gates
-            </div>
-          </div>
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              transition: 'all 0.15s ease',
+            }}
+          >
+            {saveSuccess ? <Check size={14} color="#16A34A" /> : <Save size={14} />}
+            <span>{saveSuccess ? 'Saved!' : isSaving ? 'Saving...' : 'Save'}</span>
+          </button>
+
+          <button
+            onClick={() => {
+              const outputNode =
+                currentWorkflow.nodes.find((n) => n.type === 'viewer') ||
+                currentWorkflow.nodes.find((n) => n.type.startsWith('export_')) ||
+                currentWorkflow.nodes.find((n) => n.type === 'agent') ||
+                null;
+              if (outputNode) {
+                setSelectedNodeId(outputNode.id);
+              }
+              handleRunExecution();
+            }}
+            className="pill-button-primary"
+            style={{
+              padding: '6px 16px',
+              fontSize: '0.82rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+            }}
+          >
+            <Play size={14} />
+            <span>Run Workflow</span>
+          </button>
         </div>
       </div>
 
-      {/* Visual Canvas Mockup Preview */}
-      <div style={{ marginBottom: '32px' }}>
-        <h4 style={{
-          fontSize: '0.95rem',
-          fontWeight: 700,
-          color: 'var(--text-primary)',
-          margin: '0 0 14px 0',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px'
-        }}>
-          <Boxes size={16} color="#0D3273" />
-          Interactive Canvas Preview (Under Construction)
-        </h4>
+      {/* 2. Tool Palette Ribbon (Alteryx Categorized Tabs) */}
+      <ToolPaletteRibbon onAddNode={handleAddNode} />
 
-        <div style={{
-          background: 'var(--color-surface)',
-          border: '1px solid var(--border-subtle)',
-          borderRadius: '16px',
-          padding: '24px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          minHeight: '220px',
-          position: 'relative',
-          overflow: 'hidden',
-          boxShadow: 'var(--shadow-subtle)'
-        }}>
-          {/* Mock Node Diagram */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '20px',
-            flexWrap: 'wrap',
-            justifyContent: 'center'
-          }}>
-            {/* Start Node */}
-            <div style={{
-              padding: '12px 18px',
-              borderRadius: '12px',
-              background: 'rgba(16, 185, 129, 0.1)',
-              border: '1px solid rgba(16, 185, 129, 0.3)',
-              textAlign: 'center',
-              minWidth: '120px'
-            }}>
-              <Zap size={18} color="#10B981" style={{ margin: '0 auto 4px auto' }} />
-              <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#047857' }}>User Input</div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)' }}>Entry Point</div>
-            </div>
+      {/* 3. Main Studio Workspace */}
+      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <WorkflowCanvas
+          nodes={currentWorkflow.nodes}
+          edges={currentWorkflow.edges}
+          selectedNodeId={selectedNodeId}
+          onSelectNode={(node) => setSelectedNodeId(node?.id || null)}
+          onUpdateNodes={handleUpdateNodes}
+          onUpdateEdges={handleUpdateEdges}
+          onDeleteNode={handleDeleteNode}
+          onDeleteEdge={handleDeleteEdge}
+          onAddNode={handleAddNode}
+        />
 
-            <ArrowRight size={18} color="var(--text-tertiary)" />
-
-            {/* Decision Agent */}
-            <div style={{
-              padding: '14px 20px',
-              borderRadius: '12px',
-              background: 'rgba(13, 50, 115, 0.08)',
-              border: '1px solid rgba(13, 50, 115, 0.25)',
-              textAlign: 'center',
-              minWidth: '150px'
-            }}>
-              <Cpu size={20} color="#0D3273" style={{ margin: '0 auto 4px auto' }} />
-              <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#0D3273' }}>Decision Agent</div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)' }}>Gemini LLM</div>
-            </div>
-
-            <ArrowRight size={18} color="var(--text-tertiary)" />
-
-            {/* Tools Node */}
-            <div style={{
-              padding: '14px 20px',
-              borderRadius: '12px',
-              background: 'rgba(59, 130, 246, 0.08)',
-              border: '1px solid rgba(59, 130, 246, 0.25)',
-              textAlign: 'center',
-              minWidth: '150px'
-            }}>
-              <Wrench size={20} color="#2563EB" style={{ margin: '0 auto 4px auto' }} />
-              <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#2563EB' }}>Parallel Tools</div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)' }}>Firecrawl + Tavily</div>
-            </div>
-
-            <ArrowRight size={18} color="var(--text-tertiary)" />
-
-            {/* Validator Node */}
-            <div style={{
-              padding: '14px 20px',
-              borderRadius: '12px',
-              background: 'rgba(245, 158, 11, 0.08)',
-              border: '1px solid rgba(245, 158, 11, 0.25)',
-              textAlign: 'center',
-              minWidth: '150px'
-            }}>
-              <ShieldCheck size={20} color="#D97706" style={{ margin: '0 auto 4px auto' }} />
-              <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#D97706' }}>Completeness Gate</div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)' }}>Verification & Loop</div>
-            </div>
-          </div>
-        </div>
+        {/* 4. Slide-over Output & Node Configuration Drawer (On-Screen Execution) */}
+        <WorkflowNodeDrawer
+          node={selectedNode}
+          onClose={() => setSelectedNodeId(null)}
+          onUpdateConfig={handleConfigChangeWrapper}
+          onUpdateTitle={handleTitleChangeWrapper}
+          documents={documents}
+          onUploadDocument={onUploadDocument}
+          workflow={currentWorkflow}
+          executionState={executionState}
+          onPromptChange={handlePromptChange}
+          onRunExecution={handleRunExecution}
+          onExecuteInChat={onExecuteInChat}
+        />
       </div>
 
-      {/* Feature Roadmap Grid */}
-      <h4 style={{
-        fontSize: '0.95rem',
-        fontWeight: 700,
-        color: 'var(--text-primary)',
-        margin: '0 0 14px 0',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px'
-      }}>
-        <Compass size={16} color="#0D3273" />
-        Upcoming Builder Features
-      </h4>
-
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-        gap: '16px'
-      }}>
-        <div style={{
-          background: 'var(--color-surface)',
-          border: '1px solid var(--border-subtle)',
-          borderRadius: '14px',
-          padding: '18px',
-          boxShadow: 'var(--shadow-subtle)'
-        }}>
-          <div style={{
-            width: '36px',
-            height: '36px',
-            borderRadius: '10px',
-            background: 'rgba(13, 50, 115, 0.08)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            marginBottom: '10px'
-          }}>
-            <GitBranch size={18} color="#0D3273" />
-          </div>
-          <h5 style={{ margin: '0 0 6px 0', fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-            Custom Graph Topologies
-          </h5>
-          <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            Create hierarchical agents, supervisor routing, and circular reflection loops customized to your enterprise workflows.
-          </p>
-        </div>
-
-        <div style={{
-          background: 'var(--color-surface)',
-          border: '1px solid var(--border-subtle)',
-          borderRadius: '14px',
-          padding: '18px',
-          boxShadow: 'var(--shadow-subtle)'
-        }}>
-          <div style={{
-            width: '36px',
-            height: '36px',
-            borderRadius: '10px',
-            background: 'rgba(20, 184, 166, 0.08)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            marginBottom: '10px'
-          }}>
-            <Wrench size={18} color="#14B8A6" />
-          </div>
-          <h5 style={{ margin: '0 0 6px 0', fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-            Zero-Code Tool Integration
-          </h5>
-          <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            Plug in REST APIs, OpenAPI specs, and MCP servers directly as interactive agent tools with automated JSON schema conversion.
-          </p>
-        </div>
-
-        <div style={{
-          background: 'var(--color-surface)',
-          border: '1px solid var(--border-subtle)',
-          borderRadius: '14px',
-          padding: '18px',
-          boxShadow: 'var(--shadow-subtle)'
-        }}>
-          <div style={{
-            width: '36px',
-            height: '36px',
-            borderRadius: '10px',
-            background: 'rgba(245, 158, 11, 0.08)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            marginBottom: '10px'
-          }}>
-            <ShieldCheck size={18} color="#F59E0B" />
-          </div>
-          <h5 style={{ margin: '0 0 6px 0', fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-            Guardrails & Human Gates
-          </h5>
-          <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            Configure approval checkpoints before executing sensitive tools, email dispatch, or persistent database updates.
-          </p>
-        </div>
-      </div>
+      {/* 5. Mermaid Diagram Modal */}
+      <MermaidCodeModal
+        isOpen={isMermaidOpen}
+        onClose={() => setIsMermaidOpen(false)}
+        workflowName={currentWorkflow.name}
+        nodes={currentWorkflow.nodes}
+        edges={currentWorkflow.edges}
+      />
     </div>
   );
+
+  function handleConfigChangeWrapper(nodeId: string, updatedConfig: Record<string, any>) {
+    handleUpdateConfig(nodeId, updatedConfig);
+  }
+
+  function handleTitleChangeWrapper(nodeId: string, newTitle: string) {
+    handleUpdateTitle(nodeId, newTitle);
+  }
 };

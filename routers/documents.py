@@ -346,7 +346,15 @@ async def delete_document(
     doc_id: str,
     user: Dict[str, Any] = Depends(get_optional_user),
 ):
-    """Deletes a document from repository."""
+    """Deletes a document from repository and purges its vectors from Pinecone."""
     user_id = user.get("user_id") if user.get("authenticated") else None
+    
+    # 1. Purge all corresponding vectors from Pinecone Cloud Index
+    try:
+        RAGService.delete_document_vectors(doc_id)
+    except Exception as e:
+        print(f"[Document Pipeline] Note: Pinecone vector purge failed for {doc_id}: {e}")
+
+    # 2. Delete document record from Supabase / repository
     success = DocumentRepository.delete_document(doc_id, user_id=user_id)
     return {"success": success, "deleted_id": doc_id}

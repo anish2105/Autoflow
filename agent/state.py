@@ -99,3 +99,6 @@ class AgentState(TypedDict):
     selected_file_ids: Optional[List[str]]
     retrieved_chunks: Optional[List[Dict[str, Any]]]
 
+    # 11. Custom workflow configuration (Agent Builder)
+    system_prompt_prefix: Optional[str]
+

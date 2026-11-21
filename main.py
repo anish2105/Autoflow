@@ -12,7 +12,7 @@ warnings.filterwarnings("ignore", message=".*uses fixed sampling defaults.*")
 warnings.filterwarnings("ignore", message=".*temperature will be ignored.*")
 
 from config import settings
-from routers import chat_router, graph_router, export_router, documents_router, admin_router, user_router
+from routers import chat_router, graph_router, export_router, documents_router, admin_router, user_router, workflows_router
 
 app = FastAPI(
     title="AutoFlow LangGraph Chatbot",
@@ -36,6 +36,7 @@ app.include_router(export_router)
 app.include_router(documents_router)
 app.include_router(admin_router)
 app.include_router(user_router)
+app.include_router(workflows_router)
 
 
 # Serve Frontend Static Assets

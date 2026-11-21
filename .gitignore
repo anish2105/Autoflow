@@ -34,6 +34,7 @@ venv.bak/
 *.db
 *.sqlite
 *.sqlite3
+db/workflows_store.json
 
 # Node & Frontend dependencies
 frontend/node_modules/

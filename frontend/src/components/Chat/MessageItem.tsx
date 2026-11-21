@@ -117,8 +117,9 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, enabledToolId
 
   const isTxtEnabled = !enabledToolIds || enabledToolIds.includes('export_chat_txt');
   const isPdfEnabled = !enabledToolIds || enabledToolIds.includes('export_chat_pdf');
+  const isDocxEnabled = !enabledToolIds || enabledToolIds.includes('export_chat_docx');
   const isExcelEnabled = !enabledToolIds || enabledToolIds.includes('export_chat_excel');
-  const hasAnyExport = isTxtEnabled || isPdfEnabled || isExcelEnabled;
+  const hasAnyExport = isTxtEnabled || isPdfEnabled || isDocxEnabled || isExcelEnabled;
 
   useEffect(() => {
     if (!exportOpen) return;
@@ -143,10 +144,10 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, enabledToolId
     setTimeout(() => setAssistantCopied(false), 2000);
   };
 
-  const handleExport = async (format: 'txt' | 'pdf' | 'xlsx') => {
+  const handleExport = async (format: 'txt' | 'pdf' | 'xlsx' | 'docx') => {
     try {
       setExportingFormat(format);
-      const res = await generateExport(format, message.content, 'AutoFlow Response Export');
+      const res = await generateExport(format, message.content, 'Document Export');
       triggerFileDownload(res.download_url, res.filename);
       setExportOpen(false);
     } catch (e: any) {
@@ -681,6 +682,36 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, enabledToolId
                           </button>
                         )}
 
+                        {/* Word DOCX Option (only if export_chat_docx is enabled) */}
+                        {isDocxEnabled && (
+                          <button
+                            onClick={() => handleExport('docx')}
+                            disabled={exportingFormat !== null}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px',
+                              width: '100%',
+                              padding: '7px 12px',
+                              background: 'transparent',
+                              border: 'none',
+                              cursor: exportingFormat !== null ? 'wait' : 'pointer',
+                              textAlign: 'left',
+                              color: 'var(--text-primary)',
+                              transition: 'background 0.12s ease'
+                            }}
+                            onMouseEnter={e => (e.currentTarget.style.background = 'var(--color-surface-subtle)')}
+                            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                          >
+                            <FileText size={14} color="#2563EB" />
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontWeight: 600, fontSize: '0.78rem' }}>Word Document (.docx)</div>
+                              <div style={{ fontSize: '0.68rem', color: 'var(--text-tertiary)' }}>Headings, lists, tables & formatting</div>
+                            </div>
+                            {exportingFormat === 'docx' && <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />}
+                          </button>
+                        )}
+
                         {/* Excel Option (only if export_chat_excel is enabled) */}
                         {isExcelEnabled && (
                           <button
@@ -718,9 +749,28 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, enabledToolId
             )}
           </div>
         ) : message.isStreaming ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-            <span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#0D3273', animation: 'pulseGlow 1s infinite' }} />
-            <span>Reasoning & executing graph nodes...</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#0D3273', fontSize: '0.85rem' }}>
+            {message.toolCalls && message.toolCalls.some(t => t.status === 'running') ? (
+              <>
+                <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                <span>
+                  Running <strong>
+                    {message.toolCalls.find(t => t.status === 'running')?.name === 'retrieve_document_context'
+                      ? 'Hybrid RAG Search (Pinecone & Cross-Encoder)'
+                      : message.toolCalls.find(t => t.status === 'running')?.name || 'Tool'}
+                  </strong>...
+                </span>
+              </>
+            ) : (
+              <>
+                <span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#0D3273', animation: 'pulseGlow 1s infinite' }} />
+                <span>
+                  {message.toolCalls && message.toolCalls.length > 0
+                    ? `Synthesizing grounded answer from ${message.toolCalls.length} retrieved source(s)...`
+                    : 'Reasoning & executing graph nodes...'}
+                </span>
+              </>
+            )}
           </div>
         ) : null}
       </div>

@@ -10,6 +10,7 @@ import {
   FileText,
   FileSpreadsheet,
   BookOpen,
+  FileEdit,
   Check,
   X,
   SlidersHorizontal,
@@ -66,6 +67,8 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
         return <FileText size={22} color={enabled ? '#DC2626' : color} />;
       case 'FileSpreadsheet':
         return <FileSpreadsheet size={22} color={enabled ? '#16A34A' : color} />;
+      case 'FileEdit':
+        return <FileEdit size={22} color={enabled ? '#2563EB' : color} />;
       case 'BookOpen':
         return <BookOpen size={22} color={enabled ? '#2563EB' : color} />;
       default:

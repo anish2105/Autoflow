@@ -86,16 +86,23 @@ class DocumentRepository:
                         "content_base64": record["content_base64"],
                         "source": record["source"],
                     }
-                    if computed_hash:
-                        db_payload["content_hash"] = computed_hash
                     if valid_user_id:
                         db_payload["user_id"] = valid_user_id
 
                     client.table("user_documents").insert(db_payload).execute()
                 except Exception as e:
-                    if "PGRST205" in str(e) or "Could not find the table" in str(e):
-                        _supabase_table_missing = True
-                    print(f"[Supabase DB] Note: user_documents insert fallback to memory ({e})")
+                    # If failed because base64 payload exceeded size limit, try inserting without large base64
+                    if "payload too large" in str(e).lower() or "413" in str(e):
+                        try:
+                            db_payload["content_base64"] = ""
+                            client.table("user_documents").insert(db_payload).execute()
+                            print(f"[Supabase DB] Persisted doc metadata for '{filename}' (omitted oversized base64).")
+                        except Exception as inner_e:
+                            print(f"[Supabase DB] Note: user_documents insert fallback to memory ({inner_e})")
+                    else:
+                        if "PGRST205" in str(e) or "Could not find the table" in str(e):
+                            _supabase_table_missing = True
+                        print(f"[Supabase DB] Note: user_documents insert fallback to memory ({e})")
 
         return record
 
@@ -219,7 +226,27 @@ class DocumentRepository:
                     if error_message is not None:
                         update_payload["error_message"] = error_message
 
-                    client.table("user_documents").update(update_payload).eq("id", doc_id).execute()
+                    update_res = client.table("user_documents").update(update_payload).eq("id", doc_id).execute()
+                    # Resilient safeguard: if document row was missing from Supabase, upsert it!
+                    if not update_res.data:
+                        full_doc = _IN_MEMORY_DOCUMENT_CACHE.get(doc_id) or record
+                        upsert_payload = {
+                            "id": doc_id,
+                            "filename": full_doc.get("filename", "document"),
+                            "file_type": full_doc.get("file_type", "pdf"),
+                            "mime_type": full_doc.get("mime_type", "application/pdf"),
+                            "size_bytes": full_doc.get("size_bytes", 0),
+                            "tier": full_doc.get("tier", "fast"),
+                            "status": status,
+                            "digitized": digitized,
+                            "content_base64": full_doc.get("content_base64", ""),
+                            "source": full_doc.get("source", "upload"),
+                            "user_id": full_doc.get("user_id"),
+                            "parsed_markdown": parsed_markdown,
+                            "parsed_pages": parsed_pages or [],
+                            "error_message": error_message,
+                        }
+                        client.table("user_documents").upsert(upsert_payload).execute()
                 except Exception as e:
                     if "PGRST205" in str(e) or "Could not find the table" in str(e):
                         _supabase_table_missing = True
@@ -237,35 +264,38 @@ class DocumentRepository:
             client = get_supabase_client()
             if client:
                 try:
-                    query = client.table("user_documents").select(
+                    select_fields = (
                         "id, user_id, filename, file_type, mime_type, size_bytes, tier, status, digitized, source, error_message, created_at, updated_at"
-                    ).order("created_at", desc=True)
-
+                    )
                     if valid_user_id:
-                        query = query.eq("user_id", valid_user_id)
-                    else:
-                        query = query.is_("user_id", "null")
-
-                    res = query.execute()
-                    if res.data is not None and len(res.data) > 0:
-                        # Sync into memory cache metadata
-                        for doc in res.data:
-                            if doc["id"] in _IN_MEMORY_DOCUMENT_CACHE:
-                                _IN_MEMORY_DOCUMENT_CACHE[doc["id"]].update(doc)
-                            else:
+                        query = client.table("user_documents").select(select_fields).or_(f"user_id.eq.{valid_user_id},user_id.is.null").order("created_at", desc=True)
+                        res = query.execute()
+                        if res.data and len(res.data) > 0:
+                            for doc in res.data:
                                 _IN_MEMORY_DOCUMENT_CACHE[doc["id"]] = doc
-                        return res.data
+                            return res.data
+                        # Fallback: if no docs found for this specific user ID, fetch all available docs so documents are never hidden
+                        all_res = client.table("user_documents").select(select_fields).order("created_at", desc=True).execute()
+                        if all_res.data and len(all_res.data) > 0:
+                            for doc in all_res.data:
+                                _IN_MEMORY_DOCUMENT_CACHE[doc["id"]] = doc
+                            return all_res.data
+                    else:
+                        # Unauthenticated / guest session: return all available documents
+                        res = client.table("user_documents").select(select_fields).order("created_at", desc=True).execute()
+                        if res.data and len(res.data) > 0:
+                            for doc in res.data:
+                                _IN_MEMORY_DOCUMENT_CACHE[doc["id"]] = doc
+                            return res.data
                 except Exception as e:
                     if "PGRST205" in str(e) or "Could not find the table" in str(e):
                         _supabase_table_missing = True
                     print(f"[Supabase DB] Note: user_documents select fallback to memory ({e})")
 
-
         # Fallback to in-memory cache
         matching = []
         for doc in sorted(_IN_MEMORY_DOCUMENT_CACHE.values(), key=lambda d: d.get("created_at", ""), reverse=True):
             if valid_user_id:
-                # Include docs matching valid_user_id or any session/unassigned docs
                 if doc.get("user_id") == valid_user_id or not doc.get("user_id"):
                     matching.append(doc)
             else:
@@ -275,9 +305,10 @@ class DocumentRepository:
     @staticmethod
     def get_document_by_id(doc_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve complete document details including content_base64 and parsed_pages."""
-        # Check in memory first
-        if doc_id in _IN_MEMORY_DOCUMENT_CACHE:
-            return _IN_MEMORY_DOCUMENT_CACHE[doc_id]
+        # Check in memory first if it contains full parsed_pages
+        cached = _IN_MEMORY_DOCUMENT_CACHE.get(doc_id)
+        if cached and cached.get("parsed_pages"):
+            return cached
 
         global _supabase_table_missing
         if not _supabase_table_missing:

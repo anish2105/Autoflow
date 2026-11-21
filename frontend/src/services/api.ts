@@ -130,7 +130,8 @@ export async function streamChat(
   imageData?: string,
   mimeType?: string,
   enabledTools?: string[],
-  selectedFileIds?: string[]
+  selectedFileIds?: string[],
+  systemPromptPrefix?: string
 ) {
   const payloadHistory = history
     .filter(m => m.role === 'user' || m.role === 'assistant')
@@ -157,6 +158,7 @@ export async function streamChat(
         mime_type: mimeType,
         enabled_tools: enabledTools,
         selected_file_ids: selectedFileIds || [],
+        system_prompt_prefix: systemPromptPrefix,
       }),
       signal: abortSignal,
     });
@@ -173,6 +175,7 @@ export async function streamChat(
     const reader = response.body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
+    let hasError = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -258,6 +261,7 @@ export async function streamChat(
             } else if (currentEvent === 'done') {
               callbacks.onDone(data.content);
             } else if (currentEvent === 'error') {
+              hasError = true;
               callbacks.onError(data.error || 'Unknown error occurred');
             }
           } catch {
@@ -267,7 +271,9 @@ export async function streamChat(
       }
     }
 
-    callbacks.onDone();
+    if (!hasError) {
+      callbacks.onDone();
+    }
   } catch (err: any) {
     if (err.name !== 'AbortError') {
       callbacks.onError(err.message || 'Stream connection error');
@@ -276,7 +282,7 @@ export async function streamChat(
 }
 
 export async function generateExport(
-  format: 'txt' | 'pdf' | 'xlsx',
+  format: 'txt' | 'pdf' | 'xlsx' | 'docx',
   content: string,
   title?: string,
   conversationId?: string
@@ -291,7 +297,7 @@ export async function generateExport(
     body: JSON.stringify({
       format,
       content,
-      title: title || 'AutoFlow Export',
+      title: title || 'Document Export',
       conversation_id: conversationId || null
     })
   });
@@ -560,4 +566,101 @@ export async function reviewUpgradeRequestApi(requestId: string, status: 'approv
   }
   return res.json();
 }
+
+// ==========================================
+// Workflows API (Agent Builder Studio)
+// ==========================================
+
+export async function fetchUserWorkflowsApi(): Promise<{ success: boolean; workflows: any[]; count: number }> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/workflows`, { headers: authHeaders });
+  if (!res.ok) {
+    throw new Error('Failed to fetch workflows');
+  }
+  return res.json();
+}
+
+export async function createWorkflowApi(payload: {
+  name: string;
+  description?: string;
+  system_prompt_prefix?: string;
+  nodes?: any[];
+  edges?: any[];
+  mermaid_code?: string;
+}): Promise<{ success: boolean; workflow: any }> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/workflows`, {
+    method: 'POST',
+    headers: {
+      ...authHeaders,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to create workflow');
+  }
+  return res.json();
+}
+
+export async function updateWorkflowApi(
+  workflowId: string,
+  payload: {
+    name?: string;
+    description?: string;
+    system_prompt_prefix?: string;
+    nodes?: any[];
+    edges?: any[];
+    mermaid_code?: string;
+    is_active?: boolean;
+  }
+): Promise<{ success: boolean; workflow: any }> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/workflows/${workflowId}`, {
+    method: 'PUT',
+    headers: {
+      ...authHeaders,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to update workflow');
+  }
+  return res.json();
+}
+
+export async function deleteWorkflowApi(workflowId: string): Promise<{ success: boolean }> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/workflows/${workflowId}`, {
+    method: 'DELETE',
+    headers: authHeaders,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to delete workflow');
+  }
+  return res.json();
+}
+
+export async function logCanvasCodeApi(payload: {
+  workflow_name: string;
+  node_count: number;
+  edge_count: number;
+  mermaid_code: string;
+}): Promise<{ success: boolean }> {
+  try {
+    const res = await fetch(`${API_BASE}/workflows/log_canvas`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return res.json();
+  } catch {
+    return { success: false };
+  }
+}
+
 

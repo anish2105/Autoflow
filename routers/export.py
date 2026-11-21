@@ -7,18 +7,19 @@ from db.export_repository import ExportRepository
 from tools.txt_exporter import create_txt_export
 from tools.pdf_exporter import create_pdf_export
 from tools.excel_exporter import create_excel_export
+from tools.docx_exporter import create_docx_export
 
 router = APIRouter(prefix="/api/exports", tags=["Exports"])
 
 
 class GenerateExportRequest(BaseModel):
-    format: Literal["txt", "pdf", "xlsx", "excel"] = Field(
-        ..., description="Export format: 'txt', 'pdf', or 'xlsx'"
+    format: Literal["txt", "pdf", "xlsx", "excel", "docx", "doc"] = Field(
+        ..., description="Export format: 'txt', 'pdf', 'xlsx', or 'docx'"
     )
     content: str = Field(..., description="Markdown content or chat transcript")
-    title: Optional[str] = Field("AutoFlow Export", description="Title for document")
+    title: Optional[str] = Field("Document Export", description="Title for document")
     conversation_id: Optional[str] = Field(None, description="Associated conversation UUID")
-    tables_json: Optional[str] = Field(None, description="Optional structured tables JSON for PDF")
+    tables_json: Optional[str] = Field(None, description="Optional structured tables JSON for PDF/DOCX")
     sheets_json: Optional[str] = Field(None, description="Optional structured sheets JSON for Excel")
 
 
@@ -76,8 +77,15 @@ async def generate_export(req: GenerateExportRequest) -> Dict[str, Any]:
         elif fmt == "xlsx":
             record = create_excel_export(
                 content=req.content,
-                title=req.title or "AutoFlow Excel Spreadsheet",
+                title=req.title or "Excel Spreadsheet",
                 sheets_json=req.sheets_json,
+                conversation_id=req.conversation_id
+            )
+        elif fmt in ("docx", "doc"):
+            record = create_docx_export(
+                content=req.content,
+                title=req.title or "Document Export",
+                tables_json=req.tables_json,
                 conversation_id=req.conversation_id
             )
         else:

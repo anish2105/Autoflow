@@ -862,7 +862,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           paddingRight: '4px'
         }}>
           <Zap size={11} color="#5A6578" />
-          <span>3.1</span>
+          <span>2.5</span>
         </div>
 
         {/* Send / Stop Action Button */}

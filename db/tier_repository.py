@@ -40,7 +40,7 @@ TIER_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "max_images": -1,
         "allowed_tools": [
             "calculate", "get_current_time", "web_search", "web_scrape",
-            "retrieve_document_context", "process_image", "export_chat_pdf", "export_chat_excel", "export_chat_txt"
+            "retrieve_document_context", "process_image", "export_chat_pdf", "export_chat_excel", "export_chat_docx", "export_chat_txt"
         ],
         "can_upgrade": True,
         "can_access_admin": False,
@@ -53,7 +53,7 @@ TIER_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "max_images": -1,  # unlimited
         "allowed_tools": [
             "calculate", "get_current_time", "web_search", "web_scrape",
-            "retrieve_document_context", "process_image", "export_chat_pdf", "export_chat_excel", "export_chat_txt"
+            "retrieve_document_context", "process_image", "export_chat_pdf", "export_chat_excel", "export_chat_docx", "export_chat_txt"
         ],
         "can_upgrade": False,
         "can_access_admin": True,

@@ -10,6 +10,7 @@ import { ToolsPanel } from './components/Tools/ToolsPanel';
 import { AceDashboard } from './components/Admin/AceDashboard';
 import { UpgradeRequestModal } from './components/Common/UpgradeRequestModal';
 import { ChatHistoryModal } from './components/Common/ChatHistoryModal';
+import { WorkflowHistoryModal } from './components/AgentBuilder/WorkflowHistoryModal';
 import {
   ChatMessage,
   ExecutionEvent,
@@ -22,6 +23,7 @@ import {
   DocumentTier,
   ToolConfigItem,
 } from './types';
+import { WorkflowDefinition } from './types/workflow';
 import {
   fetchGraphSchema,
   fetchServerConfig,
@@ -36,6 +38,10 @@ import {
   deleteDocumentApi,
   fetchUserToolsApi,
   updateUserToolsApi,
+  fetchUserWorkflowsApi,
+  createWorkflowApi,
+  updateWorkflowApi,
+  deleteWorkflowApi,
 } from './services/api';
 import { useAuth } from './context/AuthContext';
 
@@ -45,6 +51,14 @@ function getSessionsStorageKey(userId?: string | null): string {
 
 function getActiveSessionStorageKey(userId?: string | null): string {
   return userId ? `autoflow_active_session_${userId}` : 'autoflow_active_session_guest';
+}
+
+function getWorkflowsStorageKey(userId?: string | null): string {
+  return userId ? `autoflow_workflows_${userId}` : 'autoflow_workflows_guest';
+}
+
+function getActiveWorkflowStorageKey(userId?: string | null): string {
+  return userId ? `autoflow_active_workflow_${userId}` : 'autoflow_active_workflow_guest';
 }
 
 function generateUUID(): string {
@@ -138,6 +152,14 @@ const DEFAULT_TOOLS_CONFIG: ToolConfigItem[] = [
     icon: 'FileSpreadsheet'
   },
   {
+    id: 'export_chat_docx',
+    name: 'Word Document Exporter (DOCX)',
+    category: 'Export',
+    description: 'Generates clean formatted Microsoft Word documents (.docx) with styled headings, lists, and tables.',
+    enabled: true,
+    icon: 'FileEdit'
+  },
+  {
     id: 'export_chat_txt',
     name: 'Plain Text Exporter',
     category: 'Export',
@@ -225,6 +247,29 @@ export const App: React.FC = () => {
   // Active navigation section: 'conversations' | 'documents' | 'agent-builder' | 'tools'
   const [activeNavSection, setActiveNavSection] = useState<NavSection>('conversations');
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState<boolean>(false);
+
+  // Workflows configuration & state
+  const [workflows, setWorkflows] = useState<WorkflowDefinition[]>(() => {
+    try {
+      const key = getWorkflowsStorageKey(null);
+      const saved = localStorage.getItem(key);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+
+  const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(() => {
+    try {
+      const key = getActiveWorkflowStorageKey(null);
+      return localStorage.getItem(key);
+    } catch {}
+    return null;
+  });
+
+  const [isWorkflowsHistoryOpen, setIsWorkflowsHistoryOpen] = useState<boolean>(false);
 
   // Tools configuration state with user-specific localStorage persistence
   const [tools, setTools] = useState<ToolConfigItem[]>(() => {
@@ -462,6 +507,198 @@ export const App: React.FC = () => {
         console.warn('Failed to load documents from backend API:', err);
       });
   }, [user?.id, authLoading]);
+
+  // Load and sync workflows
+  useEffect(() => {
+    async function loadWorkflows() {
+      // 1. Read local storage first
+      try {
+        const userKey = getWorkflowsStorageKey(user?.id);
+        const saved = localStorage.getItem(userKey);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setWorkflows(parsed);
+          }
+        }
+      } catch (err) {
+        console.warn('Error reading local workflows:', err);
+      }
+
+      // 2. Fetch remote workflows from Supabase backend
+      try {
+        const remote = await fetchUserWorkflowsApi();
+        if (remote && Array.isArray(remote) && remote.length > 0) {
+          setWorkflows(remote);
+          const userKey = getWorkflowsStorageKey(user?.id);
+          localStorage.setItem(userKey, JSON.stringify(remote));
+          if (!activeWorkflowId) {
+            setActiveWorkflowId(remote[0].id);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to fetch remote workflows from server:', err);
+      }
+    }
+    loadWorkflows();
+  }, [user?.id]);
+
+  const handleSelectWorkflow = (workflowId: string) => {
+    setActiveWorkflowId(workflowId);
+    setActiveNavSection('agent-builder');
+    try {
+      const key = getActiveWorkflowStorageKey(user?.id);
+      localStorage.setItem(key, workflowId);
+    } catch {}
+  };
+
+  const handleNewWorkflow = () => {
+    setActiveWorkflowId(null);
+    setActiveNavSection('agent-builder');
+  };
+
+  const handleSaveWorkflow = async (workflow: WorkflowDefinition): Promise<WorkflowDefinition> => {
+    let savedWf = workflow;
+    try {
+      const exists = workflows.some(w => w.id === workflow.id);
+      if (exists) {
+        const res = await updateWorkflowApi(workflow.id, workflow);
+        savedWf = res.workflow || res;
+      } else {
+        const res = await createWorkflowApi(workflow);
+        savedWf = res.workflow || res;
+      }
+    } catch (err) {
+      console.warn('Server save workflow failed, saving locally:', err);
+    }
+
+    setWorkflows(prev => {
+      const idx = prev.findIndex(w => w.id === savedWf.id);
+      const updated = idx >= 0 ? prev.map(w => (w.id === savedWf.id ? savedWf : w)) : [savedWf, ...prev];
+      try {
+        const key = getWorkflowsStorageKey(user?.id);
+        localStorage.setItem(key, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    setActiveWorkflowId(savedWf.id);
+    return savedWf;
+  };
+
+  const handleDeleteWorkflow = async (workflowId: string) => {
+    try {
+      await deleteWorkflowApi(workflowId);
+    } catch (err) {
+      console.warn('Server delete workflow failed:', err);
+    }
+
+    setWorkflows(prev => {
+      const updated = prev.filter(w => w.id !== workflowId);
+      try {
+        const key = getWorkflowsStorageKey(user?.id);
+        localStorage.setItem(key, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    if (activeWorkflowId === workflowId) {
+      setActiveWorkflowId(null);
+    }
+  };
+
+  const handleDuplicateWorkflow = async (workflow: WorkflowDefinition) => {
+    const clone: WorkflowDefinition = {
+      ...workflow,
+      id: `wf_${Date.now()}_copy`,
+      name: `${workflow.name} (Copy)`,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    await handleSaveWorkflow(clone);
+  };
+
+  const handleExecuteWorkflowInChat = async (prompt: string, workflow: WorkflowDefinition) => {
+    const newSession = createNewSession();
+    newSession.title = workflow.name;
+    const agentNode = workflow.nodes.find(n => n.type === 'agent');
+    const systemPromptPrefix = agentNode?.config?.system_prompt_prefix || workflow.system_prompt_prefix || '';
+    const ragNodes = workflow.nodes.filter(n => n.type === 'rag');
+    const allFileIds = Array.from(new Set(ragNodes.flatMap(n => n.config?.selected_file_ids || [])));
+
+    newSession.selectedFileIds = allFileIds;
+
+    setSessions(prev => [newSession, ...prev]);
+    setActiveSessionId(newSession.id);
+    setSelectedDocIds(allFileIds);
+    setActiveNavSection('conversations');
+
+    const userMessage: ChatMessage = {
+      id: Math.random().toString(36).substring(7),
+      role: 'user',
+      content: prompt,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      selectedFileIds: allFileIds.length > 0 ? allFileIds : undefined,
+    };
+
+    const assistantPlaceholderId = Math.random().toString(36).substring(7);
+    const assistantMessage: ChatMessage = {
+      id: assistantPlaceholderId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      toolCalls: [],
+      isStreaming: true,
+    };
+
+    setSessions(prev =>
+      prev.map(s =>
+        s.id === newSession.id
+          ? { ...s, messages: [userMessage, assistantMessage], updatedAt: new Date().toISOString() }
+          : s
+      )
+    );
+
+    await executeChatStream({
+      promptText: prompt,
+      historyMessages: [],
+      targetThreadId: newSession.threadId,
+      assistantPlaceholderId,
+      targetFileIds: allFileIds,
+      systemPromptPrefix,
+    });
+  };
+
+  const handleUploadDocumentFromPanel = async (file: File): Promise<DocumentItem | null> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const base64 = (reader.result as string).split(',')[1];
+          const fileExt = file.name.toLowerCase().endsWith('.docx') ? 'docx' : 'pdf';
+          const res = await uploadDocumentApi({
+            filename: file.name,
+            content_base64: base64,
+            file_type: fileExt,
+            mime_type: file.type || (fileExt === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'application/pdf'),
+            tier: 'fast',
+            source: 'upload',
+            size_bytes: file.size,
+            wait_for_completion: true,
+          });
+          const docData = res.document || res;
+          const newDoc: DocumentItem = normalizeDocItem(docData);
+          handleAddDocument(newDoc);
+          resolve(newDoc);
+        } catch (err) {
+          console.error('Upload document from builder failed:', err);
+          resolve(null);
+        }
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    });
+  };
 
 
   const loadSessionHistory = async (sessionId: string, force = false) => {
@@ -720,6 +957,7 @@ export const App: React.FC = () => {
     targetFileIds,
     imageData,
     mimeType,
+    systemPromptPrefix,
   }: {
     promptText: string;
     historyMessages: ChatMessage[];
@@ -728,6 +966,7 @@ export const App: React.FC = () => {
     targetFileIds: string[];
     imageData?: string;
     mimeType?: string;
+    systemPromptPrefix?: string;
   }) => {
     setIsStreaming(true);
     setActiveNode('__start__');
@@ -935,7 +1174,8 @@ export const App: React.FC = () => {
       imageData,
       mimeType,
       tools.filter(t => t.enabled).map(t => t.id),
-      targetFileIds
+      targetFileIds,
+      systemPromptPrefix
     );
   };
 
@@ -1210,6 +1450,12 @@ export const App: React.FC = () => {
             enabled: tools.filter(t => t.enabled).length,
             total: tools.length,
           }}
+          workflows={workflows}
+          activeWorkflowId={activeWorkflowId}
+          onSelectWorkflow={handleSelectWorkflow}
+          onNewWorkflow={handleNewWorkflow}
+          onDeleteWorkflow={handleDeleteWorkflow}
+          onOpenWorkflowsHistory={() => setIsWorkflowsHistoryOpen(true)}
         />
 
         {/* Dynamic Main Workspace depending on activeNavSection */}
@@ -1284,7 +1530,15 @@ export const App: React.FC = () => {
           </main>
         ) : activeNavSection === 'agent-builder' ? (
           <main style={{ flex: 1, height: '100%', overflow: 'hidden' }}>
-            <AgentBuilderPanel />
+            <AgentBuilderPanel
+              workflow={workflows.find(w => w.id === activeWorkflowId) || null}
+              onSaveWorkflow={handleSaveWorkflow}
+              onExecuteInChat={handleExecuteWorkflowInChat}
+              onOpenHistory={() => setIsWorkflowsHistoryOpen(true)}
+              onNewWorkflow={handleNewWorkflow}
+              documents={documents}
+              onUploadDocument={handleUploadDocumentFromPanel}
+            />
           </main>
         ) : (
           <main style={{ flex: 1, height: '100%', overflow: 'hidden' }}>
@@ -1309,6 +1563,20 @@ export const App: React.FC = () => {
           setActiveNavSection('conversations');
         }}
         onDeleteSession={handleDeleteSession}
+      />
+
+      {/* Workflows History Modal */}
+      <WorkflowHistoryModal
+        isOpen={isWorkflowsHistoryOpen}
+        onClose={() => setIsWorkflowsHistoryOpen(false)}
+        workflows={workflows}
+        activeWorkflowId={activeWorkflowId}
+        onSelectWorkflow={(wf) => {
+          handleSelectWorkflow(wf.id);
+        }}
+        onDeleteWorkflow={handleDeleteWorkflow}
+        onDuplicateWorkflow={handleDuplicateWorkflow}
+        onNewWorkflow={handleNewWorkflow}
       />
 
       {/* Upgrade Request Modal */}

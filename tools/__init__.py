@@ -6,6 +6,7 @@ from tools.image_tool import process_image, set_active_turn_image, get_active_tu
 from tools.txt_exporter import export_chat_txt, create_txt_export
 from tools.pdf_exporter import export_chat_pdf, create_pdf_export
 from tools.excel_exporter import export_chat_excel, create_excel_export
+from tools.docx_exporter import export_chat_docx, create_docx_export
 from tools.rag_retrieval_tool import (
     retrieve_document_context,
     set_active_turn_files,
@@ -22,6 +23,7 @@ ALL_TOOLS = [
     export_chat_txt,
     export_chat_pdf,
     export_chat_excel,
+    export_chat_docx,
     retrieve_document_context,
 ]
 
@@ -34,10 +36,12 @@ __all__ = [
     "export_chat_txt",
     "export_chat_pdf",
     "export_chat_excel",
+    "export_chat_docx",
     "retrieve_document_context",
     "create_txt_export",
     "create_pdf_export",
     "create_excel_export",
+    "create_docx_export",
     "set_active_turn_image",
     "get_active_turn_image",
     "clear_active_turn_image",
