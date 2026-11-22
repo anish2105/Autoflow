@@ -554,6 +554,10 @@ export const App: React.FC = () => {
 
   const handleNewWorkflow = () => {
     setActiveWorkflowId(null);
+    try {
+      const key = getActiveWorkflowStorageKey(user?.id);
+      localStorage.removeItem(key);
+    } catch {}
     setActiveNavSection('agent-builder');
   };
 

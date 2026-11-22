@@ -298,12 +298,26 @@ export const AgentBuilderPanel: React.FC<AgentBuilderPanelProps> = ({
     if (initialWorkflow) {
       setCurrentWorkflow(initialWorkflow);
       const inputNode = initialWorkflow.nodes.find((n) => n.type === 'input');
-      if (inputNode?.config?.default_query) {
-        setExecutionState((prev) => ({
-          ...prev,
-          prompt: inputNode.config.default_query,
-        }));
-      }
+      setExecutionState((prev) => ({
+        ...prev,
+        isRunning: false,
+        streamOutput: '',
+        activeStep: null,
+        completed: false,
+        prompt: inputNode?.config?.default_query || '',
+      }));
+      setSelectedNodeId(null);
+    } else {
+      const freshWf = createDefaultWorkflow();
+      setCurrentWorkflow(freshWf);
+      setSelectedNodeId(null);
+      setExecutionState({
+        isRunning: false,
+        streamOutput: '',
+        activeStep: null,
+        completed: false,
+        prompt: freshWf.nodes.find((n) => n.type === 'input')?.config?.default_query || '',
+      });
     }
   }, [initialWorkflow]);
 
@@ -473,11 +487,18 @@ export const AgentBuilderPanel: React.FC<AgentBuilderPanelProps> = ({
   };
 
   const handleResetCanvas = () => {
+    const freshWf = createDefaultWorkflow();
+    setCurrentWorkflow(freshWf);
+    setSelectedNodeId(null);
+    setExecutionState({
+      isRunning: false,
+      streamOutput: '',
+      activeStep: null,
+      completed: false,
+      prompt: freshWf.nodes.find((n) => n.type === 'input')?.config?.default_query || '',
+    });
     if (onNewWorkflow) {
       onNewWorkflow();
-    } else {
-      setCurrentWorkflow(createDefaultWorkflow());
-      setSelectedNodeId(null);
     }
   };
 

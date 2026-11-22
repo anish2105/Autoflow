@@ -314,58 +314,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
         {/* OTHER SECTIONS: Documents, Agent Builder, Tools */}
         {/* ============================================================== */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-          {/* SECTION 2: DOCUMENTS */}
-          <div
-            onClick={() => onSelectNavSection('documents')}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: isCollapsed ? 'center' : 'space-between',
-              padding: isCollapsed ? '10px 0' : '9px 12px',
-              borderRadius: '8px',
-              background: activeNavSection === 'documents' ? 'var(--accent-user-bubble)' : 'transparent',
-              border: activeNavSection === 'documents' ? '1px solid rgba(13, 50, 115, 0.2)' : '1px solid transparent',
-              cursor: 'pointer',
-              transition: 'all 0.15s ease'
-            }}
-            onMouseEnter={(e) => {
-              if (activeNavSection !== 'documents') e.currentTarget.style.background = 'var(--color-surface-subtle)';
-            }}
-            onMouseLeave={(e) => {
-              if (activeNavSection !== 'documents') e.currentTarget.style.background = 'transparent';
-            }}
-            title="Documents (PDF, Excel, Images, DOCX)"
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <FileText
-                size={16}
-                color={activeNavSection === 'documents' ? '#0D3273' : 'var(--text-secondary)'}
-              />
-              {!isCollapsed && (
-                <span style={{
-                  fontSize: '0.82rem',
-                  fontWeight: activeNavSection === 'documents' ? 700 : 500,
-                  color: activeNavSection === 'documents' ? '#0D3273' : 'var(--text-primary)'
-                }}>
-                  Documents
-                </span>
-              )}
-            </div>
-            {!isCollapsed && (
-              <span style={{
-                fontSize: '0.66rem',
-                background: activeNavSection === 'documents' ? 'rgba(13, 50, 115, 0.15)' : 'var(--color-surface-subtle)',
-                color: activeNavSection === 'documents' ? '#0D3273' : 'var(--text-secondary)',
-                padding: '1px 6px',
-                borderRadius: '8px',
-                fontWeight: 600
-              }}>
-                {documentsCount}
-              </span>
-            )}
-          </div>
-
-          {/* SECTION 3: AGENT BUILDER STUDIO */}
+          {/* SECTION 2: AGENT BUILDER STUDIO (Moved above Documents) */}
           <div>
             <div
               onClick={() => onSelectNavSection('agent-builder')}
@@ -570,6 +519,57 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                   </button>
                 )}
               </div>
+            )}
+          </div>
+
+          {/* SECTION 3: DOCUMENTS */}
+          <div
+            onClick={() => onSelectNavSection('documents')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: isCollapsed ? 'center' : 'space-between',
+              padding: isCollapsed ? '10px 0' : '9px 12px',
+              borderRadius: '8px',
+              background: activeNavSection === 'documents' ? 'var(--accent-user-bubble)' : 'transparent',
+              border: activeNavSection === 'documents' ? '1px solid rgba(13, 50, 115, 0.2)' : '1px solid transparent',
+              cursor: 'pointer',
+              transition: 'all 0.15s ease'
+            }}
+            onMouseEnter={(e) => {
+              if (activeNavSection !== 'documents') e.currentTarget.style.background = 'var(--color-surface-subtle)';
+            }}
+            onMouseLeave={(e) => {
+              if (activeNavSection !== 'documents') e.currentTarget.style.background = 'transparent';
+            }}
+            title="Documents (PDF, Excel, Images, DOCX)"
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <FileText
+                size={16}
+                color={activeNavSection === 'documents' ? '#0D3273' : 'var(--text-secondary)'}
+              />
+              {!isCollapsed && (
+                <span style={{
+                  fontSize: '0.82rem',
+                  fontWeight: activeNavSection === 'documents' ? 700 : 500,
+                  color: activeNavSection === 'documents' ? '#0D3273' : 'var(--text-primary)'
+                }}>
+                  Documents
+                </span>
+              )}
+            </div>
+            {!isCollapsed && (
+              <span style={{
+                fontSize: '0.66rem',
+                background: activeNavSection === 'documents' ? 'rgba(13, 50, 115, 0.15)' : 'var(--color-surface-subtle)',
+                color: activeNavSection === 'documents' ? '#0D3273' : 'var(--text-secondary)',
+                padding: '1px 6px',
+                borderRadius: '8px',
+                fontWeight: 600
+              }}>
+                {documentsCount}
+              </span>
             )}
           </div>
 
