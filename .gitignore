@@ -59,3 +59,12 @@ Thumbs.db
 # Logs & scratch files
 *.log
 scratch/
+
+# Blog drafts & generated visuals
+blogs/
+
+# Ruff and Pylint caches
+.ruff_cache/
+.pylint.d/
+
+
